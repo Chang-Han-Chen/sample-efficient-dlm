@@ -11,6 +11,7 @@ aws/
 **/*.json
 **/*.npy
 **/*.txt
+!/requirements.txt
 **/*.pickle
 **/*.pt
 **/*.log
