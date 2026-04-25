@@ -42,6 +42,7 @@ def supervised_loss_fn(
     z_loss_weight: float,
     is_causal: bool | None,
     output_length: int | None,
+    bd3_block_len: int | None,
     loss_impl: str,
     logit_chunk_size: int,
 ):
@@ -54,6 +55,7 @@ def supervised_loss_fn(
         attention_mask=attention_mask,
         is_causal=is_causal,
         output_length=output_length,
+        bd3_block_len=bd3_block_len,
         z_loss_weight=z_loss_weight,
         loss_impl=loss_impl,
         logit_chunk_size=logit_chunk_size,
@@ -136,7 +138,7 @@ def train_step_accumulated(
     return metrics
 
 
-@functools.partial(nnx.jit, static_argnums=(9, 10, 11, 12))
+@functools.partial(nnx.jit, static_argnums=(9, 10, 11, 12, 13))
 def train_step_supervised(
     model,
     optimizer,
@@ -151,6 +153,7 @@ def train_step_supervised(
     output_length: int | None,
     loss_impl: str = "full",
     logit_chunk_size: int = 1024,
+    bd3_block_len: int | None = None,
 ):
     (total_loss, metrics), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
         model,
@@ -162,6 +165,7 @@ def train_step_supervised(
         z_loss_weight,
         is_causal,
         output_length,
+        bd3_block_len,
         loss_impl,
         logit_chunk_size,
     )
@@ -172,7 +176,7 @@ def train_step_supervised(
     return metrics
 
 
-@functools.partial(nnx.jit, static_argnums=(9, 10, 11, 12))
+@functools.partial(nnx.jit, static_argnums=(9, 10, 11, 12, 13))
 def train_step_supervised_accumulated(
     model,
     optimizer,
@@ -187,6 +191,7 @@ def train_step_supervised_accumulated(
     output_length: int | None,
     loss_impl: str = "full",
     logit_chunk_size: int = 1024,
+    bd3_block_len: int | None = None,
 ):
     """Update once using mean supervised gradients over leading microbatch axis."""
     accum_steps = inputs.shape[0]
@@ -200,6 +205,7 @@ def train_step_supervised_accumulated(
         z_loss_weight,
         is_causal,
         output_length,
+        bd3_block_len,
         loss_impl,
         logit_chunk_size,
     )
@@ -217,6 +223,7 @@ def train_step_supervised_accumulated(
             z_loss_weight,
             is_causal,
             output_length,
+            bd3_block_len,
             loss_impl,
             logit_chunk_size,
         )
@@ -258,7 +265,7 @@ def eval_step(model, inputs: Array, targets: Array, loss_impl: str = "full", log
     return {"loss": loss, "z_loss": z_loss}
 
 
-@functools.partial(nnx.jit, static_argnums=(6, 7, 8, 9))
+@functools.partial(nnx.jit, static_argnums=(6, 7, 8, 9, 10))
 def eval_step_supervised(
     model,
     inputs: Array,
@@ -270,6 +277,7 @@ def eval_step_supervised(
     output_length: int | None,
     loss_impl: str = "full",
     logit_chunk_size: int = 1024,
+    bd3_block_len: int | None = None,
 ):
     _, metrics = supervised_lm_loss(
         model,
@@ -280,6 +288,7 @@ def eval_step_supervised(
         attention_mask=attention_mask,
         is_causal=is_causal,
         output_length=output_length,
+        bd3_block_len=bd3_block_len,
         z_loss_weight=0.0,
         loss_impl=loss_impl,
         logit_chunk_size=logit_chunk_size,

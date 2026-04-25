@@ -38,6 +38,7 @@ class ModelContext(NamedTuple):
     attention_mask: Array | None
     is_causal: bool
     output_length: int | None
+    bd3_block_len: int | None = None
 
 
 def _clip_t_steps_np(t_steps: np.ndarray, cfg: DiffusionConfig) -> np.ndarray:
@@ -204,21 +205,27 @@ def make_model_context(
     objective: Objective,
     seq_len: int,
     cfg: DiffusionConfig | None = None,
+    *,
+    bd3_attention: Literal["dense", "blocked"] = "dense",
 ) -> ModelContext:
     """Static transformer call context for an objective/sequence length."""
     if objective == "ar":
-        return ModelContext(None, None, True, None)
+        return ModelContext(None, None, True, None, None)
     if objective == "mdlm":
-        return ModelContext(None, None, False, None)
+        return ModelContext(None, None, False, None, None)
     if objective != "bd3lm":
         raise ValueError(f"unknown objective: {objective!r}")
     if cfg is None:
         raise ValueError("cfg is required for bd3lm")
     validate_block_len(seq_len, cfg.block_len)
     if int(cfg.block_len) == int(seq_len):
-        return ModelContext(None, None, False, None)
+        return ModelContext(None, None, False, None, None)
+    if bd3_attention not in ("dense", "blocked"):
+        raise ValueError("bd3_attention must be one of 'dense' or 'blocked'")
     token_positions = jnp.concatenate(
         [jnp.arange(seq_len, dtype=jnp.int32), jnp.arange(seq_len, dtype=jnp.int32)]
     )
+    if bd3_attention == "blocked":
+        return ModelContext(token_positions, None, False, seq_len, int(cfg.block_len))
     attention_mask = make_bd3_train_mask(seq_len, int(cfg.block_len))
-    return ModelContext(token_positions, attention_mask, False, seq_len)
+    return ModelContext(token_positions, attention_mask, False, seq_len, None)

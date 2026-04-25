@@ -10,6 +10,8 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from transformer.attention import bd3_block_sparse_attention
+from transformer.masks import make_bd3_train_mask
 from transformer.transformer import Transformer
 from training.diffusion import (
     DiffusionConfig,
@@ -78,6 +80,57 @@ def test_bd3_model_context_repeats_positions_and_builds_dual_mask():
     np.testing.assert_array_equal(
         np.asarray(ctx.token_positions),
         np.asarray([0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7], dtype=np.int32),
+    )
+
+
+def test_bd3_blocked_context_uses_repeated_positions_without_dense_mask():
+    cfg = DiffusionConfig(mask_token_id=32, block_len=4)
+    ctx = make_model_context("bd3lm", 8, cfg, bd3_attention="blocked")
+    assert ctx.is_causal is False
+    assert ctx.output_length == 8
+    assert ctx.attention_mask is None
+    assert ctx.bd3_block_len == 4
+    np.testing.assert_array_equal(
+        np.asarray(ctx.token_positions),
+        np.asarray([0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7], dtype=np.int32),
+    )
+
+
+def test_bd3_block_sparse_attention_matches_dense_mask():
+    q = jax.random.normal(jax.random.PRNGKey(0), (2, 8, 4, 8), dtype=jnp.float32)
+    k = jax.random.normal(jax.random.PRNGKey(1), (2, 8, 4, 8), dtype=jnp.float32)
+    v = jax.random.normal(jax.random.PRNGKey(2), (2, 8, 4, 8), dtype=jnp.float32)
+    mask = make_bd3_train_mask(seq_len=4, block_len=2)
+    dense = jax.nn.dot_product_attention(q, k, v, mask=mask, is_causal=False)
+    blocked = bd3_block_sparse_attention(q, k, v, block_len=2)
+    np.testing.assert_allclose(np.asarray(blocked), np.asarray(dense), atol=1e-6, rtol=1e-6)
+
+
+def test_bd3_blocked_model_matches_dense_mask_model_outputs():
+    model = _small_diffusion_model(seq_len=4)
+    cfg = DiffusionConfig(mask_token_id=32, block_len=2)
+    dense_ctx = make_model_context("bd3lm", 4, cfg)
+    blocked_ctx = make_model_context("bd3lm", 4, cfg, bd3_attention="blocked")
+    ids = jnp.asarray([[1, 2, 3, 4, 10, 11, 12, 13]], dtype=jnp.int32)
+
+    dense_logits = model(
+        ids,
+        token_positions=dense_ctx.token_positions,
+        attention_mask=dense_ctx.attention_mask,
+        is_causal=dense_ctx.is_causal,
+    )
+    blocked_logits = model(
+        ids,
+        token_positions=blocked_ctx.token_positions,
+        attention_mask=blocked_ctx.attention_mask,
+        is_causal=blocked_ctx.is_causal,
+        bd3_block_len=blocked_ctx.bd3_block_len,
+    )
+    np.testing.assert_allclose(
+        np.asarray(blocked_logits),
+        np.asarray(dense_logits),
+        atol=1e-5,
+        rtol=1e-5,
     )
 
 
@@ -283,6 +336,9 @@ if __name__ == "__main__":
     test_mdlm_batch_masks_only_selected_positions()
     test_bd3lm_batch_uses_blockwise_timesteps_and_masks()
     test_bd3_model_context_repeats_positions_and_builds_dual_mask()
+    test_bd3_blocked_context_uses_repeated_positions_without_dense_mask()
+    test_bd3_block_sparse_attention_matches_dense_mask()
+    test_bd3_blocked_model_matches_dense_mask_model_outputs()
     test_mdlm_supervised_loss_matches_manual_masked_ce()
     test_chunked_supervised_loss_matches_full_for_diffusion_mask()
     test_unsupervised_diffusion_targets_do_not_affect_loss_or_gradients()

@@ -284,6 +284,7 @@ def supervised_lm_loss(
     attention_mask: Array | None = None,
     is_causal: bool | None = None,
     output_length: int | None = None,
+    bd3_block_len: int | None = None,
     z_loss_weight: float = 1e-4,
     ignore_index: int | None = None,
     loss_impl: str = "full",
@@ -310,6 +311,7 @@ def supervised_lm_loss(
                 attention_mask=attention_mask,
                 is_causal=is_causal,
                 return_hidden=True,
+                bd3_block_len=bd3_block_len,
             )[:, :output_length]
             logits = model.project_logits(hidden)
         else:
@@ -318,6 +320,7 @@ def supervised_lm_loss(
                 token_positions=token_positions,
                 attention_mask=attention_mask,
                 is_causal=is_causal,
+                bd3_block_len=bd3_block_len,
             )
         loss, z_loss, _ = cross_entropy_with_z_loss(
             logits,
@@ -332,6 +335,7 @@ def supervised_lm_loss(
             attention_mask=attention_mask,
             is_causal=is_causal,
             return_hidden=True,
+            bd3_block_len=bd3_block_len,
         )
         if output_length is not None:
             hidden = hidden[:, :output_length]

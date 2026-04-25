@@ -115,6 +115,7 @@ class Block(nnx.Module):
         token_ids: Int[Array, "b seq"] | None = None,
         attention_mask: Array | None = None,
         is_causal: bool | None = None,
+        bd3_block_len: int | None = None,
     ) -> tuple[Float[Array, "b seq d"], Float[Array, "b seq kv_h head_dim"]]:
         attn_out, v = self.attn(
             self.ln1(x),
@@ -123,6 +124,7 @@ class Block(nnx.Module):
             token_ids=token_ids,
             attention_mask=attention_mask,
             is_causal=is_causal,
+            bd3_block_len=bd3_block_len,
         )
         x = x + attn_out
         x = x + self.ffn(self.ln2(x))
@@ -208,6 +210,7 @@ class Transformer(nnx.Module):
         token_positions: Int[Array, "b seq"] | None = None,
         attention_mask: Array | None = None,
         is_causal: bool | None = None,
+        bd3_block_len: int | None = None,
     ) -> Float[Array, "b seq d"]:
         """Return final normalized hidden states without materializing logits."""
         x = self.embedding(token_ids)
@@ -225,6 +228,7 @@ class Transformer(nnx.Module):
                     token_ids,
                     attention_mask,
                     is_causal,
+                    bd3_block_len,
                 )
             else:
                 x, v = block(
@@ -234,6 +238,7 @@ class Transformer(nnx.Module):
                     token_ids,
                     attention_mask,
                     is_causal,
+                    bd3_block_len,
                 )
             if v1 is None:
                 v1 = v
@@ -254,12 +259,14 @@ class Transformer(nnx.Module):
         attention_mask: Array | None = None,
         is_causal: bool | None = None,
         return_hidden: bool = False,
+        bd3_block_len: int | None = None,
     ) -> Float[Array, "b seq vocab"] | Float[Array, "b seq d"]:
         hidden = self.encode(
             token_ids,
             token_positions=token_positions,
             attention_mask=attention_mask,
             is_causal=is_causal,
+            bd3_block_len=bd3_block_len,
         )
         if return_hidden:
             return hidden

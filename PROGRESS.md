@@ -597,3 +597,57 @@ Meaningful next inspections/tests before profiling:
 7. Profile BD3 with dense mask at small and medium sequence lengths to see
    whether `jax.nn.dot_product_attention` is materializing dense attention
    state before optimizing kernels.
+
+## BD3 Blocked Attention Prototype
+
+Implemented an experimental pure-JAX BD3 attention decomposition, enabled with
+`--bd3-attention blocked` and leaving the dense mask path as the default.
+
+Reasoning:
+
+- The BD3 train mask over `x_t || x_0` allows only `L^2 + L * block_len`
+  query/key token pairs out of the dense `4L^2` dual-stream matrix. For the
+  current `L=512`, `block_len=128` target, only `31.25%` of the dense
+  dual-stream attention matrix is semantically live.
+- A dense boolean mask passed to `jax.nn.dot_product_attention` preserves
+  correctness but does not provide FlexAttention-style block metadata. cuDNN
+  may still be memory-efficient/flash-style, but it has no reason to skip the
+  arbitrary disallowed BD3 KV blocks.
+- PyTorch FlexAttention gets its win from `BlockMask`: the mask rule is
+  compiled into sparse block metadata, so the kernel can skip masked KV blocks
+  rather than simply writing `-inf` into a dense logical score matrix.
+- The first JAX approximation does not write a custom GPU kernel. Instead,
+  `bd3_block_sparse_attention(q, k, v, block_len=...)` splits the dual stream
+  into exact per-block full-attention calls:
+  noisy block `b` attends to noisy block `b` plus clean blocks `< b`; clean
+  block `b` attends to clean blocks `<= b`. This computes exactly the allowed
+  BD3 pairs while reusing normal `jax.nn.dot_product_attention` for each
+  rectangular subproblem.
+
+Files changed:
+
+- `jax/transformer/attention.py`: added `bd3_block_sparse_attention` and an
+  opt-in `bd3_block_len` path in MHSA.
+- `jax/training/diffusion.py`: `ModelContext` now carries optional
+  `bd3_block_len`; `make_model_context(..., bd3_attention="blocked")` returns
+  repeated positions with no dense mask.
+- `jax/train_ar.py`: added `--bd3-attention dense|blocked`.
+- Training/eval/loss plumbing now forwards `bd3_block_len` through model calls.
+
+Validation:
+
+- `python -m py_compile jax/transformer/attention.py jax/transformer/transformer.py jax/training/diffusion.py jax/training/loss.py jax/training/step.py jax/train_ar.py jax/tests/test_diffusion_stack.py`
+  passed.
+- `python jax/tests/test_diffusion_stack.py` passed, including direct
+  dense-mask vs blocked-attention parity and full tiny-model output parity.
+- `python jax/tests/test_training_stack.py` passed.
+- `python jax/tests/test_parity_extras.py` passed.
+- Tiny synthetic BD3 training smoke with `--bd3-attention blocked` passed on CPU.
+
+Next profile:
+
+- Compare dense vs blocked BD3 at clean `seq_len=512`, `block_len=128`,
+  microbatch `32`, bf16, `--attention-impl cudnn`.
+- Then test whether blocked attention plus `--grad-checkpoint-layers 8` allows
+  BD3 microbatch `64`, because reducing grad accumulation from `16` to `8` is
+  the practical target for fixed effective batch `512`.

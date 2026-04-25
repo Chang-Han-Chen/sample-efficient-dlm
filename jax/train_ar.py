@@ -60,6 +60,7 @@ def parse_args():
     p.add_argument("--t-max", type=float, default=0.95)
     p.add_argument("--noise-schedule", choices=("linear", "cosine"), default="linear")
     p.add_argument("--bd3-block-len", "--block-len", dest="bd3_block_len", type=int, default=128)
+    p.add_argument("--bd3-attention", choices=("dense", "blocked"), default="dense")
     p.add_argument("--eval-t-frac", type=float, default=0.6)
     p.add_argument("--d-model", type=int, default=768)
     p.add_argument("--d-ff", type=int, default=2048)
@@ -151,6 +152,7 @@ def mean_eval_loss(
                 model_context.output_length,
                 loss_impl,
                 logit_chunk_size,
+                model_context.bd3_block_len,
             )
         totals["loss"] += float(jax.block_until_ready(metrics["loss"]))
         totals["z_loss"] += float(metrics["z_loss"])
@@ -214,6 +216,7 @@ def main():
         args.objective,
         args.context_length,
         diffusion_cfg,
+        bd3_attention=args.bd3_attention,
     )
     model = Transformer(
         nnx.Rngs(args.seed),
@@ -302,6 +305,7 @@ def main():
             "t_max": None if diffusion_cfg is None else diffusion_cfg.t_max,
             "noise_schedule": None if diffusion_cfg is None else diffusion_cfg.noise_schedule,
             "bd3_block_len": None if diffusion_cfg is None else diffusion_cfg.block_len,
+            "bd3_attention": args.bd3_attention,
             "dtype": args.dtype,
             "attention_impl": args.attention_impl,
             "fuse_qkv": not args.disable_qkv_fusion,
@@ -481,6 +485,7 @@ def main():
                         model_context.output_length,
                         args.loss_impl,
                         args.logit_chunk_size,
+                        model_context.bd3_block_len,
                     )
                 else:
                     metrics = train_step_supervised_accumulated(
@@ -497,6 +502,7 @@ def main():
                         model_context.output_length,
                         args.loss_impl,
                         args.logit_chunk_size,
+                        model_context.bd3_block_len,
                     )
             loss_value = float(jax.block_until_ready(metrics["loss"]))
             elapsed = time.perf_counter() - start

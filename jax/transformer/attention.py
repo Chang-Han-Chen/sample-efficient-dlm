@@ -18,6 +18,72 @@ Array = jax.Array
 AttentionImpl = str | None
 
 
+def bd3_block_sparse_attention(
+    q: Float[Array, "b seq q_h head_dim"],
+    k: Float[Array, "b seq kv_h head_dim"],
+    v: Float[Array, "b seq kv_h head_dim"],
+    *,
+    block_len: int,
+    implementation: AttentionImpl = None,
+) -> Float[Array, "b seq q_h head_dim"]:
+    """Compute BD3 dual-stream attention without visiting disallowed blocks.
+
+    Inputs are laid out as ``x_t || x_0``. For each block ``b``:
+      * noisy queries see noisy block ``b`` and clean blocks ``< b``;
+      * clean queries see clean blocks ``<= b``.
+
+    This is not a custom GPU kernel. It is a structured decomposition into
+    small full-attention calls, which lets cuDNN/XLA avoid the dense 2L x 2L
+    arbitrary mask while preserving exact BD3 semantics.
+    """
+    T = q.shape[1]
+    if T % 2 != 0:
+        raise ValueError(f"BD3 dual-stream attention expects even length, got {T}")
+    seq_len = T // 2
+    block_len = int(block_len)
+    if block_len <= 0 or seq_len % block_len != 0:
+        raise ValueError(f"block_len={block_len} must divide seq_len={seq_len}")
+
+    q_noisy, q_clean = q[:, :seq_len], q[:, seq_len:]
+    k_noisy, k_clean = k[:, :seq_len], k[:, seq_len:]
+    v_noisy, v_clean = v[:, :seq_len], v[:, seq_len:]
+
+    noisy_outs = []
+    clean_outs = []
+    n_blocks = seq_len // block_len
+    for block_idx in range(n_blocks):
+        start = block_idx * block_len
+        end = start + block_len
+
+        qn = q_noisy[:, start:end]
+        kn = k_noisy[:, start:end]
+        vn = v_noisy[:, start:end]
+        if start > 0:
+            kn = jnp.concatenate([kn, k_clean[:, :start]], axis=1)
+            vn = jnp.concatenate([vn, v_clean[:, :start]], axis=1)
+        noisy_outs.append(
+            jax.nn.dot_product_attention(
+                qn,
+                kn,
+                vn,
+                is_causal=False,
+                implementation=implementation,
+            )
+        )
+
+        clean_outs.append(
+            jax.nn.dot_product_attention(
+                q_clean[:, start:end],
+                k_clean[:, :end],
+                v_clean[:, :end],
+                is_causal=False,
+                implementation=implementation,
+            )
+        )
+
+    return jnp.concatenate([*noisy_outs, *clean_outs], axis=1)
+
+
 class MultiHeadSelfAttention(nnx.Module):
     """Causal MHSA with three independent Q, K, V projections.
 
@@ -150,6 +216,7 @@ class MultiHeadSelfAttention(nnx.Module):
         token_ids: Int[Array, "b seq"] | None = None,
         attention_mask: Array | None = None,
         is_causal: bool | None = None,
+        bd3_block_len: int | None = None,
     ) -> tuple[Float[Array, "b seq d_model"], Float[Array, "b seq kv_h head_dim"]]:
         B, T, _ = x.shape
 
@@ -218,14 +285,27 @@ class MultiHeadSelfAttention(nnx.Module):
         # --- Scaled dot-product attention (causal) ----------------------
         # nnx.dot_product_attention does NOT accept is_causal; jax.nn does.
         use_causal = self.is_causal if is_causal is None else bool(is_causal)
-        attn = jax.nn.dot_product_attention(
-            q,
-            k,
-            v,
-            mask=attention_mask,
-            is_causal=use_causal,
-            implementation=self.attention_impl,
-        )   # (B, T, n_heads, head_dim)
+        if bd3_block_len is not None:
+            if use_causal:
+                raise ValueError("BD3 blocked attention is bidirectional, not causal")
+            if attention_mask is not None:
+                raise ValueError("BD3 blocked attention should not also receive a dense mask")
+            attn = bd3_block_sparse_attention(
+                q,
+                k,
+                v,
+                block_len=int(bd3_block_len),
+                implementation=self.attention_impl,
+            )
+        else:
+            attn = jax.nn.dot_product_attention(
+                q,
+                k,
+                v,
+                mask=attention_mask,
+                is_causal=use_causal,
+                implementation=self.attention_impl,
+            )   # (B, T, n_heads, head_dim)
 
         # --- Gating ------------------------------------------------------
         # Gates are applied *after* attention but *before* the output proj.
