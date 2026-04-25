@@ -210,6 +210,58 @@ old-all (`~0.6%`), again within the noise of these short profiles.
    remaining memory lever. PLAN.md says to refactor the model/loss API so the
    model returns final hidden states and the loss owns chunked
    `hidden @ lm_head.weight.T` projection.
+
+## Chunked Logits/Loss Work
+
+Implementation status:
+
+- Added trainer flags `--loss-impl full|chunked` and `--logit-chunk-size`.
+- Full loss keeps the old path: model returns full logits, then CE/z-loss.
+- Chunked loss calls `model(..., return_hidden=True)` and computes
+  `hidden @ lm_head.weight.T` in chunks over flattened `(B*T)`.
+- The chunked final linear CE has a custom VJP. Backward recomputes each
+  chunk's logits and accumulates gradients into hidden states and the LM-head
+  weight, so full logits should not be saved as a backward residual.
+- BPB reporting is not implemented for chunked loss yet; training loss and
+  z-loss are implemented.
+
+Correctness:
+
+- `python -m py_compile jax/training/loss.py jax/training/step.py jax/train_ar.py jax/tests/test_training_stack.py` passed.
+- `python jax/tests/test_training_stack.py` passed, including:
+  chunked linear CE value/gradient parity against full logits, and chunked
+  model AR loss parity against full model logits.
+
+Initial A100 profiles, baseline architecture, `seq_len=512`, tied embeddings,
+bf16, cuDNN attention, chunk size `4096`:
+
+| loss path | batch | step time | tok/s | MFU | JAX peak | nvidia-smi peak |
+|---|---:|---:|---:|---:|---:|---:|
+| full logits | 128 | 0.2653s | 247.0k | 53.8% | 29.18 GB | 43489 MiB |
+| chunked logits | 128 | 0.3108s | 210.8k | 45.9% | 17.50 GB | 18911 MiB |
+| chunked logits | 192 | 0.4477s | 219.6k | 47.8% | 25.54 GB | 37343 MiB |
+| full logits | 192 | 0.3767s | 261.0k | 56.8% | 43.07 GB | 61345 MiB |
+| chunked logits, chunk 8192 | 192 | 0.4406s | 223.1k | 48.6% | 25.91 GB | 37343 MiB |
+| chunked logits, chunk 16384 | 192 | 0.4365s | 225.2k | 49.1% | 27.27 GB | 41439 MiB |
+| chunked logits, chunk 16384 | 256 | 0.5661s | 231.5k | 50.4% | 34.57 GB | 41439 MiB |
+| chunked logits, chunk 32768 | 256 | 0.5658s | 231.6k | 50.5% | 37.89 GB | 61343 MiB |
+
+Interpretation: chunked loss substantially reduces memory, but `chunk_size=4096`
+is slower than full logits at batch 128 and does not recover raw throughput via
+larger batches in the first implementation. Larger chunks help only slightly.
+For the Phase A target of fixed effective batch size 512 sequences, compare
+microbatch/accumulation wall time, not just raw microbatch throughput:
+
+- Full logits microbatch 128 -> grad accumulation 4:
+  about `4 * 0.2653 = 1.061s` before any accumulation-specific overhead.
+- Chunked logits microbatch 256 -> grad accumulation 2:
+  about `2 * 0.566 = 1.13s` before accumulation-specific overhead.
+
+So this first pure-JAX custom-VJP chunked loss saves substantial memory but is
+not yet faster for the fixed effective batch target. It may still matter for
+longer sequence lengths, old-all/diffusion, or shapes where full logits cannot
+fit. Next useful checks are true gradient-accumulation profiles at effective
+batch 512 and/or optimizing the chunked loss implementation.
 2. Profile strict old bundle separately if needed:
    QK-norm + value residual + layernorm/depth scaling, without gating.
 3. Use longer profile windows once functionality is stable, ideally 50 measured

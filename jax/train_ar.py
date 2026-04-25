@@ -64,6 +64,8 @@ def parse_args():
     p.add_argument("--adam-wd", type=float, default=0.0)
     p.add_argument("--muon-wd", type=float, default=1e-4)
     p.add_argument("--z-loss-weight", type=float, default=1e-4)
+    p.add_argument("--loss-impl", choices=("full", "chunked"), default="full")
+    p.add_argument("--logit-chunk-size", type=int, default=1024)
     p.add_argument("--max-grad-norm", type=float, default=1.0)
     p.add_argument("--log-every", type=int, default=1)
     p.add_argument("--eval-batches", type=int, default=0)
@@ -84,11 +86,19 @@ def to_device_batch(batch: tuple[np.ndarray, np.ndarray]) -> tuple[jax.Array, ja
     return jnp.asarray(inputs_np, dtype=jnp.int32), jnp.asarray(targets_np, dtype=jnp.int32)
 
 
-def mean_eval_loss(model, dataset: MemoryMappedTokenDataset, *, batches: int, batch_size: int) -> dict[str, float]:
+def mean_eval_loss(
+    model,
+    dataset: MemoryMappedTokenDataset,
+    *,
+    batches: int,
+    batch_size: int,
+    loss_impl: str,
+    logit_chunk_size: int,
+) -> dict[str, float]:
     totals = {"loss": 0.0, "z_loss": 0.0}
     for _ in range(batches):
         inputs, targets = to_device_batch(dataset.get_batch(batch_size))
-        metrics = eval_step(model, inputs, targets)
+        metrics = eval_step(model, inputs, targets, loss_impl, logit_chunk_size)
         totals["loss"] += float(jax.block_until_ready(metrics["loss"]))
         totals["z_loss"] += float(metrics["z_loss"])
     return {k: v / batches for k, v in totals.items()}
@@ -211,6 +221,8 @@ def main():
             "value_embedding": args.value_embedding,
             "value_embedding_scale": args.value_embedding_scale,
             "weight_tying": args.weight_tying,
+            "loss_impl": args.loss_impl,
+            "logit_chunk_size": args.logit_chunk_size,
             "optimizer": "NorMuonCWD+AdamW",
             "trainable_param_count": trainable_params,
             "compute_param_count": compute_params,
@@ -295,6 +307,8 @@ def main():
                     targets,
                     args.z_loss_weight,
                     args.max_grad_norm,
+                    args.loss_impl,
+                    args.logit_chunk_size,
                 )
             else:
                 metrics = train_step_accumulated(
@@ -304,6 +318,8 @@ def main():
                     targets,
                     args.z_loss_weight,
                     args.max_grad_norm,
+                    args.loss_impl,
+                    args.logit_chunk_size,
                 )
             loss_value = float(jax.block_until_ready(metrics["loss"]))
             elapsed = time.perf_counter() - start
@@ -331,6 +347,8 @@ def main():
                     eval_dataset,
                     batches=args.eval_batches,
                     batch_size=args.batch_size,
+                    loss_impl=args.loss_impl,
+                    logit_chunk_size=args.logit_chunk_size,
                 )
                 row["eval_loss"] = eval_metrics["loss"]
                 row["eval_z_loss"] = eval_metrics["z_loss"]

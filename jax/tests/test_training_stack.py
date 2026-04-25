@@ -17,6 +17,11 @@ from training.optimizer import (
     create_normuon_adamw,
 )
 from training.step import train_step, train_step_accumulated
+from training.loss import (
+    ar_loss,
+    cross_entropy_with_z_loss,
+    linear_cross_entropy_with_z_loss_chunked,
+)
 
 
 def _small_model():
@@ -90,8 +95,70 @@ def test_gradient_accumulation_train_step_decreases_fixed_batch_loss():
     assert losses[-1] < losses[0] * 0.8, losses
 
 
+def test_chunked_linear_ce_matches_full_value_and_grad():
+    rng = jax.random.PRNGKey(0)
+    hidden = jax.random.normal(rng, (2, 5, 8), dtype=jnp.float32)
+    weight = jax.random.normal(jax.random.fold_in(rng, 1), (17, 8), dtype=jnp.float32)
+    targets = jax.random.randint(jax.random.fold_in(rng, 2), (2, 5), 0, 17)
+
+    def full_fn(h, w):
+        logits = h @ w.T
+        loss, z_loss, _ = cross_entropy_with_z_loss(logits, targets)
+        return loss + 1e-4 * z_loss
+
+    def chunked_fn(h, w):
+        loss, z_loss = linear_cross_entropy_with_z_loss_chunked(
+            h,
+            w,
+            targets,
+            chunk_size=3,
+        )
+        return loss + 1e-4 * z_loss
+
+    full_value, full_grads = jax.value_and_grad(full_fn, argnums=(0, 1))(hidden, weight)
+    chunk_value, chunk_grads = jax.value_and_grad(chunked_fn, argnums=(0, 1))(hidden, weight)
+
+    np.testing.assert_allclose(np.asarray(chunk_value), np.asarray(full_value), atol=1e-6, rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(chunk_grads[0]), np.asarray(full_grads[0]), atol=1e-6, rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(chunk_grads[1]), np.asarray(full_grads[1]), atol=1e-6, rtol=1e-6)
+
+
+def test_chunked_ar_loss_matches_full_loss():
+    model = _small_model()
+    rng = np.random.default_rng(2)
+    tokens = rng.integers(0, 32, size=(4, 17), dtype=np.int32)
+    inputs = jnp.asarray(tokens[:, :-1], dtype=jnp.int32)
+    targets = jnp.asarray(tokens[:, 1:], dtype=jnp.int32)
+
+    full_total, full_metrics = ar_loss(
+        model,
+        inputs,
+        targets,
+        z_loss_weight=1e-4,
+        loss_impl="full",
+    )
+    chunk_total, chunk_metrics = ar_loss(
+        model,
+        inputs,
+        targets,
+        z_loss_weight=1e-4,
+        loss_impl="chunked",
+        logit_chunk_size=7,
+    )
+
+    np.testing.assert_allclose(np.asarray(chunk_total), np.asarray(full_total), atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(
+        np.asarray(chunk_metrics["loss"]),
+        np.asarray(full_metrics["loss"]),
+        atol=1e-5,
+        rtol=1e-5,
+    )
+
+
 if __name__ == "__main__":
     test_param_grouping()
     test_normuon_adamw_train_step_decreases_fixed_batch_loss()
     test_gradient_accumulation_train_step_decreases_fixed_batch_loss()
+    test_chunked_linear_ce_matches_full_value_and_grad()
+    test_chunked_ar_loss_matches_full_loss()
     print("TRAINING STACK TESTS PASSED")
