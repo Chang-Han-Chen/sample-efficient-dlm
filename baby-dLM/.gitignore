@@ -1,0 +1,10 @@
+# Downloaded data and trained tokenizer (regenerate with: python prepare.py)
+data_cache/
+
+# Checkpoints (large binary files)
+*.pt
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/

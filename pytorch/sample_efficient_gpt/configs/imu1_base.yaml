@@ -1,0 +1,108 @@
+# IMU-1 Base (430M) - Training Configuration
+# Paper: "Sample Efficient Language Model Pre-training"
+# Model: thepowerfuldeez/imu1_base
+
+base: gpt_small_faster
+
+model: &model
+  vocab_size: 49152
+  attn_qknorm: true
+  attn_gating: per-head
+  attn_val_residual: true
+  d_model: 1152
+  d_ff: 3072
+  n_layers: 30
+  n_heads: 18
+  n_kv_heads: 6
+  weight_tying: true
+  layernorm_scaling: true
+
+trainer_base: &trainer_base
+  dist_mode: ddp
+  save_dir: checkpoints
+  val_every: 5000
+  gradient_accumulation_steps: 2
+
+optim_base: &optim_base
+  scheduler: wsd
+  muon_wd: 0.1
+  lr: 6e-3
+
+data_base: &data_base
+  tokenizer_path: HuggingFaceTB/SmolLM2-360M
+  validation_path: data/val.npy
+
+experiments:
+  # Stage 1: Stable phase (100k iterations, 29B tokens)
+  # WSD schedule with stable LR, warmup from zero
+  stable:
+    model: *model
+    trainer:
+      <<: *trainer_base
+      run_name: "imu1_stage1_stable"
+      max_steps: 100000
+      save_every: 2500
+      load_from: checkpoints/smollm2_init.pt  # SmolLM2 converted to IMU format
+    optim:
+      <<: *optim_base
+      muon_lr: 1.1e-2
+      zero_lr_steps: 500
+      warmup_steps: 2500
+      wsd_need_warmup: true
+      wsd_phase: stable
+    data:
+      <<: *data_base
+      train_path: data_stage1_stable.json
+      context_length: 768
+      batch_size: 384
+      val_batch_size: 32
+
+  # Stage 2: Decay phase (100k iterations, 28B tokens)
+  # WSD schedule with decay, continues from stage 1
+  decay:
+    model: *model
+    trainer:
+      <<: *trainer_base
+      run_name: "imu1_stage2_decay"
+      max_steps: 200000
+      save_every: 2500
+      load_from: checkpoints/imu1_stage1_stable/100000.pt
+    optim:
+      <<: *optim_base
+      lr_min_coeff: 0.25
+      muon_lr: 1.15e-2
+      wsd_need_warmup: false
+      wsd_phase: decay
+      wsd_decay_step: 100000
+    data:
+      <<: *data_base
+      train_path: data_stage2_decay.json
+      context_length: 896
+      batch_size: 312
+      seed: 43
+
+  # Stage 3: Midtrain phase (65k iterations, 14B tokens)
+  # Final training with instruction/reasoning data
+  midtrain:
+    model: *model
+    trainer:
+      <<: *trainer_base
+      run_name: "imu1_stage3_midtrain"
+      max_steps: 265000
+      save_every: 2500
+      load_from: checkpoints/imu1_stage2_decay/200000.pt
+    optim:
+      <<: *optim_base
+      lr_min_coeff: 0.33
+      muon_lr: 0.003
+      lr: 0.002
+      wsd_need_warmup: false
+      wsd_phase: decay
+      wsd_decay_step: 200000
+    data:
+      <<: *data_base
+      train_path: data_stage3_midtrain.json
+      context_length: 1152
+      batch_size: 192
+      val_batch_size: 8
+      seed: 43
