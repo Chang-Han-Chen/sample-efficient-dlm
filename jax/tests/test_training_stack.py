@@ -62,8 +62,45 @@ def test_param_grouping():
         dtype=jnp.float32,
     )
     ve_specs = build_param_specs(ve_model)
-    assert ve_specs["blocks"][1]["attn"]["value_embedding_table"]["weight"].kind == "adam_table"
+    assert ve_specs["blocks"][1]["attn"]["value_embedding_table"]["weight"].kind == "adam_ve_table"
     assert ve_specs["blocks"][1]["attn"]["value_embedding_gate"]["weight"].kind == "muon"
+    assert ve_specs["blocks"][1]["attn"]["value_embedding_gain"].kind == "adam_scalar"
+
+
+def test_value_embedding_table_uses_separate_adam_betas():
+    model = Transformer(
+        nnx.Rngs(2),
+        n_layers=2,
+        vocab_size=32,
+        d_model=64,
+        n_heads=4,
+        d_ff=128,
+        value_embedding=True,
+        dtype=jnp.float32,
+    )
+    tx = create_normuon_adamw(
+        model,
+        NormuonAdamWConfig(
+            table_adam_lr=1e-3,
+            scalar_adam_lr=1e-3,
+            muon_lr=1e-3,
+            adam_betas=(0.95, 0.99),
+            value_embedding_adam_betas=(0.8, 0.95),
+            adam_weight_decay=0.0,
+            muon_weight_decay=0.0,
+            scheduler="constant",
+        ),
+    )
+    params_state = nnx.state(model, nnx.Param)
+    params = nnx.as_pure(params_state)
+    opt_state = tx.init(params_state)
+    grads = jax.tree_util.tree_map(lambda p: jnp.ones_like(p) * 0.01, params)
+    _, new_state = tx.update(grads, opt_state, params)
+
+    embedding_m = new_state.adam_m["embedding"]["weight"]
+    ve_m = new_state.adam_m["blocks"][1]["attn"]["value_embedding_table"]["weight"]
+    np.testing.assert_allclose(np.asarray(embedding_m), 0.0005, atol=1e-8, rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(ve_m), 0.002, atol=1e-8, rtol=1e-6)
 
 
 def test_normuon_adamw_update_exercises_both_optimizer_paths():
@@ -267,6 +304,7 @@ def test_training_checkpoint_roundtrip_restores_model_and_optimizer():
 
 if __name__ == "__main__":
     test_param_grouping()
+    test_value_embedding_table_uses_separate_adam_betas()
     test_normuon_adamw_train_step_decreases_fixed_batch_loss()
     test_gradient_accumulation_train_step_decreases_fixed_batch_loss()
     test_chunked_linear_ce_matches_full_value_and_grad()

@@ -181,6 +181,7 @@ class MultiHeadSelfAttention(nnx.Module):
         if self.value_embedding:
             if vocab_size is None:
                 raise ValueError("vocab_size is required when value_embedding=True")
+            self.value_embedding_gain = nnx.Param(jnp.zeros((1,), dtype=jnp.float32))
             self.value_embedding_table = ValueEmbedding(
                 rngs,
                 vocab_size,
@@ -284,7 +285,11 @@ class MultiHeadSelfAttention(nnx.Module):
             gate_in = x[..., : self.value_embedding_gate_channels]
             gate = 2.0 * jax.nn.sigmoid(self.value_embedding_gate(gate_in))
             gate = gate[..., None].astype(v.dtype)
-            v = v + self.value_embedding_scale * gate * value_emb
+            gain = (
+                self.value_embedding_scale
+                * self.value_embedding_gain.value.astype(jnp.float32)
+            ).astype(v.dtype)
+            v = v + gain * gate * value_emb
 
         # --- QK-norm -----------------------------------------------------
         if self.qknorm:

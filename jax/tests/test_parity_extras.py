@@ -193,6 +193,36 @@ def test_value_embedding_zero_scale_noop():
     assert_close("value_embedding scale=0 raw_v", v_ve, v_base, atol=1e-6, rtol=1e-6)
 
 
+def test_value_embedding_gain_zero_noop():
+    """VE starts as a no-op until the learned per-layer gain moves from zero."""
+    print("[MHSA value_embedding gain zero no-op]")
+    d_model, n_heads, vocab_size = 32, 4, 64
+    base = JMHSA(nnx.Rngs(0), d_model, n_heads, value_residual=True)
+    ve = JMHSA(
+        nnx.Rngs(1),
+        d_model,
+        n_heads,
+        vocab_size=vocab_size,
+        value_residual=True,
+        value_embedding=True,
+        value_embedding_scale=1.0,
+    )
+    ve.W_q.weight.value = base.W_q.weight.value
+    ve.W_k.weight.value = base.W_k.weight.value
+    ve.W_v.weight.value = base.W_v.weight.value
+    ve.W_o.weight.value = base.W_o.weight.value
+    ve.alpha1.value = base.alpha1.value
+    ve.alpha2.value = base.alpha2.value
+    ve.scale.value = base.scale.value
+
+    x = jnp.asarray(np.random.randn(2, 6, d_model).astype(np.float32))
+    ids = jnp.asarray(np.random.randint(0, vocab_size, (2, 6)), dtype=jnp.int32)
+    y_base, v_base = base(x)
+    y_ve, v_ve = ve(x, token_ids=ids)
+    assert_close("value_embedding gain=0 out", y_ve, y_base, atol=1e-6, rtol=1e-6)
+    assert_close("value_embedding gain=0 raw_v", v_ve, v_base, atol=1e-6, rtol=1e-6)
+
+
 def test_bd3_masks():
     print("[JAX BD3 masks]")
     seq_len, block_len = 8, 2
@@ -248,6 +278,7 @@ if __name__ == "__main__":
     test_grad_checkpointing()
     test_value_embedding_layers()
     test_value_embedding_zero_scale_noop()
+    test_value_embedding_gain_zero_noop()
     test_bd3_masks()
     test_transformer_hidden_mask_and_value_embedding_api()
     print("\nEXTRAS PASSED")

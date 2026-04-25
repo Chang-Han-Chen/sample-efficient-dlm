@@ -1123,3 +1123,90 @@ Open follow-ups:
 - Confirm post-pmap model state shape on a real 2-GPU box before the
   first DP run, since the CPU smokes do not exercise eval immediately
   after a DP step.
+
+## Phase 0 AR W&B Round-Trip and Old-Bundle LR Probes
+
+Runtime environment:
+
+- Escalated JAX sees two GPUs: `cuda:0` and `cuda:1`, both A100-SXM4-80GB.
+- `data/climbmix_smoke_8192/` was rebuilt with
+  `python jax/data/prepare_climbmix.py --output-dir data/climbmix_smoke_8192 --num-shards 1 --vocab-size 8192`.
+  The manifest reports `64,373,247` train tokens and `64,423,581` val tokens.
+- Tokenizer and loader sanity checks passed for train and val at
+  `context_length=512`; token IDs were in `0..8191` and the AR shift relation
+  held.
+- AR configs and `jax/configs/optimizer/normuon_adamw.yaml` were aligned back
+  to the PLAN.md LR family: table Adam `0.01`, scalar Adam `0.005`, Muon
+  `0.04`.
+
+AR baseline Phase 0:
+
+- 300-step baseline run:
+  `runs/ar_matrix/ar_baseline_phase0_300/train.jsonl`.
+- W&B run id: `7b0ky41i`.
+- Final checkpoint uploaded as W&B artifact
+  `ar_baseline-checkpoint-final:final`.
+- Step 299 metrics: train loss `3.5198`, grad norm `0.2158`,
+  avg measured step `0.4290s`, `611k` tokens/s, estimated `88.7%` MFU,
+  JAX peak HBM `36.53 GB`.
+- W&B restore run downloaded `ar_baseline-checkpoint-final:final`, restored
+  step `299`, and resumed at step `300`:
+  `runs/ar_matrix/ar_baseline_phase0_restore/train.jsonl`.
+- Resume seam was clean: step 299 train loss `3.5198`; step 300 train loss
+  `3.5377`, eval loss `3.6350`, no NaN/spike. Step 350 eval loss was `3.5654`.
+
+AR baseline LR re-check:
+
+- Re-swept the baseline after the old-bundle LR probe found a much higher
+  preferred multiplier.
+- `lr_mult=2.0`: completed 300 steps at
+  `runs/ar_matrix/ar_baseline_probe_lr2p0/train.jsonl`. Best logged eval loss
+  was `3.7949` at step 225, then the curve worsened to `3.8133` by step 275.
+  Avg measured step `0.4325s`, `606.2k` tokens/s, estimated `88.0%` MFU, JAX
+  peak HBM `36.52 GB`.
+- `lr_mult=0.5`: intentionally interrupted after it was clearly
+  noncompetitive. Last eval point before interrupt was step 200 with eval loss
+  `3.8154`.
+- Conclusion: baseline default `lr_mult=1.0` remains the best baseline LR from
+  the checked bracket. Do not transfer the old-bundle `5.0` multiplier back to
+  the no-intervention baseline.
+
+AR old-bundle LR probes:
+
+- All probes used the PLAN shape: `--data-parallel --num-devices 2
+  --batch-size 512 --grad-accum-steps 1`, seq512, vocab8192, bf16, cuDNN
+  attention, full logits.
+- Live `nvidia-smi` during `lr_mult=0.5` caught active use of both GPUs:
+  about `62 GB` on each A100, GPU utilization `100%` / `81%`, and roughly
+  `367-383 W`.
+- `lr_mult=1.0`: completed 300 steps at
+  `runs/ar_matrix/ar_old_bundle_probe_lr1p0/train.jsonl`. Best logged eval
+  loss was `3.5843` at step 275. Avg measured step `0.4743s`, `552.7k`
+  tokens/s, estimated `80.3%` MFU, JAX peak HBM `46.22 GB`.
+- `lr_mult=2.0`: completed 300 steps at
+  `runs/ar_matrix/ar_old_bundle_probe_lr2p0/train.jsonl`. Best logged eval
+  loss was `3.5644` at step 275. Avg measured step `0.4764s`, `550.3k`
+  tokens/s, estimated `80.0%` MFU, JAX peak HBM `46.22 GB`.
+- `lr_mult=5.0`: completed 300 steps at
+  `runs/ar_matrix/ar_old_bundle_probe_lr5p0/train.jsonl`. Best logged eval
+  loss was `3.5253` at step 275. Avg measured step `0.4780s`, `548.4k`
+  tokens/s, estimated `79.7%` MFU, JAX peak HBM `46.22 GB`. Live
+  `nvidia-smi` samples during the run showed about `62 GB` allocated on each
+  A100 and active utilization up to `100%` / `100%`.
+- `lr_mult=10.0`: intentionally interrupted after step 200 because it was
+  stable but clearly behind `5.0`. Last eval point before interrupt was step
+  200 with eval loss `3.6398` versus `3.5960` for `5.0` at the matched step.
+- `lr_mult=0.5`: intentionally interrupted after it was clearly
+  noncompetitive. Last eval point before interrupt was step 225 with eval loss
+  `3.7053`; matched-step losses trailed both `1.0` and `2.0`.
+
+Current AR-old-bundle probe conclusion:
+
+- `lr_mult=5.0` is the best of the tried short probes at 300-step scale:
+  `3.5253` eval versus `3.5644` for `2.0` and `3.5843` for default `1.0`.
+  It was stable over 300 steps, with low final grad norm (`0.052`) and no
+  NaN/spike.
+- `lr_mult=10.0` does not look useful; treat `5.0` as the selected
+  old-bundle multiplier for the next run.
+- `lr_mult=0.5` should not be promoted.
+- No 5100-step run has been launched yet.

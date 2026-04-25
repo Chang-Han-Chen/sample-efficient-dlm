@@ -1,8 +1,8 @@
 name: normuon_adamw
 optimizer: NorMuonCWD+AdamW
-table_adam_lr: 0.007
-scalar_adam_lr: 0.007
-muon_lr: 0.015
+table_adam_lr: 0.01
+scalar_adam_lr: 0.005
+muon_lr: 0.04
 adam_wd: 0.0
 muon_wd: 0.0001
 adam_betas: [0.95, 0.99]

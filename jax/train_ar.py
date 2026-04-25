@@ -123,6 +123,8 @@ def parse_args():
     p.add_argument("--muon-wd", type=float, default=1e-4)
     p.add_argument("--adam-beta1", type=float, default=0.95)
     p.add_argument("--adam-beta2", type=float, default=0.99)
+    p.add_argument("--value-embedding-adam-beta1", type=float, default=0.8)
+    p.add_argument("--value-embedding-adam-beta2", type=float, default=0.95)
     p.add_argument("--adam-eps", type=float, default=1e-8)
     p.add_argument("--muon-beta2", type=float, default=0.95)
     p.add_argument("--muon-momentum", type=float, default=0.95)
@@ -552,6 +554,10 @@ def main():
         adam_weight_decay=args.adam_wd,
         muon_weight_decay=args.muon_wd,
         adam_betas=(args.adam_beta1, args.adam_beta2),
+        value_embedding_adam_betas=(
+            args.value_embedding_adam_beta1,
+            args.value_embedding_adam_beta2,
+        ),
         muon_momentum=args.muon_momentum,
         muon_beta2=args.muon_beta2,
         adam_eps=args.adam_eps,
@@ -720,6 +726,10 @@ def main():
         "adam_wd": args.adam_wd,
         "muon_wd": args.muon_wd,
         "adam_betas": [args.adam_beta1, args.adam_beta2],
+        "value_embedding_adam_betas": [
+            args.value_embedding_adam_beta1,
+            args.value_embedding_adam_beta2,
+        ],
         "adam_eps": args.adam_eps,
         "muon_momentum": args.muon_momentum,
         "muon_beta2": args.muon_beta2,

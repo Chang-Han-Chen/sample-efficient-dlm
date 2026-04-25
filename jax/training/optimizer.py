@@ -4,7 +4,8 @@ The grouping follows the role-based pattern in ``karpathy/train.py`` while
 keeping only three LR families for the tied-embedding JAX model. The default
 constants stay anchored to the ``pytorch/`` small-GPT optimizer recipe:
 
-* AdamW table params: token embedding / tied lm head, and value embeddings.
+* AdamW table params: token embedding / tied lm head.
+* AdamW value-embedding table params: same LR as tables, separate betas.
 * AdamW scalar/vector params: norms, QK gain, value-residual scalars.
 * NorMuon with cautious weight decay for the remaining matrix parameters.
 """
@@ -30,6 +31,7 @@ class NormuonAdamWConfig:
     adam_weight_decay: float = 0.0
     muon_weight_decay: float = 1e-4
     adam_betas: tuple[float, float] = (0.95, 0.99)
+    value_embedding_adam_betas: tuple[float, float] = (0.8, 0.95)
     muon_momentum: float = 0.95
     muon_beta2: float = 0.95
     adam_eps: float = 1e-8
@@ -63,16 +65,18 @@ def _path_to_str(path: tuple[object, ...]) -> str:
 
 
 def _is_table_param(path: str) -> bool:
-    return (
-        path == "embedding.weight"
-        or path == "lm_head.weight"
-        or path.endswith(".value_embedding_table.weight")
-    )
+    return path == "embedding.weight" or path == "lm_head.weight"
+
+
+def _is_value_embedding_table_param(path: str) -> bool:
+    return path.endswith(".value_embedding_table.weight")
 
 
 def _param_kind(path: str, value: Array) -> str:
     if _is_table_param(path):
         return "adam_table"
+    if _is_value_embedding_table_param(path):
+        return "adam_ve_table"
     if value.ndim < 2:
         return "adam_scalar"
     return "muon"
@@ -204,16 +208,26 @@ def create_normuon_adamw(model, cfg: NormuonAdamWConfig) -> optax.GradientTransf
         t = state.count.astype(jnp.float32) + 1.0
 
         def update_leaf(grad, param, spec, adam_m, adam_v, muon_m, muon_second):
-            if spec.kind in ("adam_table", "adam_scalar"):
-                adam_lr = table_adam_lr if spec.kind == "adam_table" else scalar_adam_lr
-                beta1, beta2 = cfg.adam_betas
+            if spec.kind in ("adam_table", "adam_ve_table", "adam_scalar"):
+                adam_lr = table_adam_lr if spec.kind in ("adam_table", "adam_ve_table") else scalar_adam_lr
+                beta1, beta2 = (
+                    cfg.value_embedding_adam_betas
+                    if spec.kind == "adam_ve_table"
+                    else cfg.adam_betas
+                )
                 new_m = beta1 * adam_m + (1.0 - beta1) * grad
                 new_v = beta2 * adam_v + (1.0 - beta2) * (grad * grad)
                 bias1 = 1.0 - beta1**t
                 bias2 = 1.0 - beta2**t
                 step_size = adam_lr * jnp.sqrt(bias2) / bias1
                 denom = jnp.sqrt(new_v) + cfg.adam_eps
-                update = -adam_lr * cfg.adam_weight_decay * param - step_size * (new_m / denom)
+                direction = jnp.nan_to_num(
+                    new_m / denom,
+                    nan=0.0,
+                    posinf=0.0,
+                    neginf=0.0,
+                )
+                update = -adam_lr * cfg.adam_weight_decay * param - step_size * direction
                 return update.astype(param.dtype), new_m, new_v, muon_m, muon_second
 
             update, new_muon_m, new_muon_second = _normuon_leaf(
@@ -228,6 +242,7 @@ def create_normuon_adamw(model, cfg: NormuonAdamWConfig) -> optax.GradientTransf
                 beta2=cfg.muon_beta2,
                 cautious_weight_decay=cfg.cautious_weight_decay,
             )
+            update = jnp.nan_to_num(update, nan=0.0, posinf=0.0, neginf=0.0)
             return update.astype(param.dtype), adam_m, adam_v, new_muon_m, new_muon_second
 
         mapped = jax.tree_util.tree_map(
