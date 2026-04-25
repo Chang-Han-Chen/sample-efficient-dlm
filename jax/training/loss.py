@@ -383,12 +383,9 @@ def supervised_lm_loss_sums(
     CE + ``z_loss_weight * z_loss`` aggregated over all supervised tokens in
     this microbatch (a sum, not a mean). The metrics dict contains the
     sum-form quantities plus the supervised-token count, so each step type
-    can do its own correct reduction:
-
-    * single device: divide grads by ``valid_count``.
-    * accumulation: sum sums and counts across microsteps, then divide.
-    * DP: ``psum`` sums and counts across devices, then divide.
-    * DP + accumulation: sum locally, then ``psum``, then divide.
+    can divide by its desired denominator. Diffusion training passes an
+    expected-mask denominator; callers that want a token mean can divide by
+    ``valid_count``.
 
     Differentiating ``total_sum`` w.r.t. params yields ``valid_count *
     grad(total_mean)`` because ``valid_count`` is mask-derived (no param

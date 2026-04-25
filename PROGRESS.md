@@ -1015,16 +1015,11 @@ Why MDLM is slower per step than AR at the same clean sequence length:
 Reviewed the data-parallel path in `jax/training/step.py` and
 `jax/train_ar.py` and landed correctness, eval-memory, and reporting fixes.
 
-Sum/count supervised loss reduction:
+Sum-form supervised loss reduction:
 
 - The previous supervised DP/accumulated paths used `pmean` of per-shard
-  per-microbatch *means*, not a global weighted mean. With uneven mask
-  counts across shards (or microbatches), that is mean-of-means, which
-  does not equal `Σ_d sum_CE_d / Σ_d count_d`. Worst-case effect at the
-  configured MDLM/BD3 mask rates is sub-percent on most steps because
-  per-shard counts have low variance, but the bias grows at smaller
-  per-device batches and at eval time, and is the cheapest correctness
-  fix to land permanently.
+  per-microbatch *means*. That is not the intended diffusion objective once
+  MDLM/BD3 are treated as unweighted masked-token CE sums.
 - Fix: added `supervised_lm_loss_sums` in `jax/training/loss.py` which
   returns `(total_sum, {loss_sum, z_loss_sum, valid_count})`. The
   differentiable scalar is now a sum, not a mean, so each step type can
@@ -1032,21 +1027,28 @@ Sum/count supervised loss reduction:
   dependency), so differentiating `total_sum = total_mean * valid_count`
   yields the gradient of the true sum-form loss when `valid_count > 0`,
   and zero when `valid_count == 0`.
+- Diffusion training now uses:
+  `sum(masked CE) / (batch_size * seq_len * ((t_min + t_max) / 2))`,
+  with `batch_size` interpreted as the effective optimizer-step batch
+  (`global_microbatch * grad_accum_steps`). The same denominator is applied
+  to the z-loss sum. Under the default `t_min=0.45`, `t_max=0.95`, this is
+  division by expected mask rate `0.7`, not by the actual sampled masked-token
+  count.
 - Refactored four supervised step functions in `jax/training/step.py`:
-  - `train_step_supervised`: divides grads and metric sums by local
-    `valid_count`.
+  - `train_step_supervised`: divides gradient/metric sums by the provided
+    loss normalizer, falling back to local `valid_count` if none is supplied.
   - `train_step_supervised_accumulated`: sums grads and counts across
-    accum microsteps, then divides by the accumulated count.
+    accum microsteps, then divides by the provided effective-batch normalizer.
   - `train_step_supervised_data_parallel`: `psum`s grads and counts
-    across devices, then divides by the global count.
+    across devices, then divides by the global loss normalizer.
   - `train_step_supervised_accumulated_data_parallel`: sums locally over
     accum microsteps, `psum`s across devices, then divides by the
-    global accumulated count.
+    global effective-batch loss normalizer.
 - Type-aware metrics dict: `loss`, `z_loss`, `total_loss` are reported
-  as global weighted means; `supervised_tokens` is reported as the
-  global count (not a per-device mean); `grad_norm` is computed once on
-  the globally-reduced gradients. This replaces the previous blanket
-  `tree_map(pmean)` over the whole metrics dict.
+  using the configured denominator; `supervised_tokens` is reported as the
+  actual global count (not a per-device mean); `loss_normalizer` is logged;
+  `grad_norm` is computed once on the globally-reduced gradients. This
+  replaces the previous blanket `tree_map(pmean)` over the whole metrics dict.
 - The AR step functions (`train_step`, `train_step_data_parallel`,
   `train_step_accumulated`, `train_step_accumulated_data_parallel`) are
   unchanged because every shard always has the same valid-token count.
@@ -1073,21 +1075,25 @@ Max peak HBM across devices:
 
 Data-parallel parity tests:
 
-- Added `jax/tests/test_data_parallel_parity.py` with three checks,
-  designed to run on simulated CPU devices via
-  `XLA_FLAGS=--xla_force_host_platform_device_count=2`:
+- Added `jax/tests/test_data_parallel_parity.py`, designed to run on simulated
+  CPU devices via `XLA_FLAGS=--xla_force_host_platform_device_count=2`. Current
+  checks:
   1. `test_supervised_loss_sums_basic_invariants`: end-to-end sanity
      for the new sum/count helper.
   2. `test_ar_single_vs_dp_parity`: AR DP on `(2, 4, 16)` sharded batch
      vs single-device on the equivalent `(8, 16)` global batch produces
-     the same loss, grad norm, and post-update params; optimizer state
-     is bit-identical across devices after the step.
-  3. `test_mdlm_uneven_mask_dp_parity` (load-bearing): MDLM with shard
+     the same loss, grad norm, and post-update params; replicated model and
+     optimizer leaves are checked for bit-identical device copies when an
+     explicit device axis is present.
+  3. `test_ar_accumulated_single_vs_dp_parity`: same for AR with a leading
+     accumulation axis.
+  4. `test_mdlm_uneven_mask_dp_parity` (load-bearing): MDLM with shard
      0 supervising ~25% of tokens and shard 1 supervising ~75%
-     reproduces the single-device global weighted mean. Under the old
-     mean-of-means code, this test would fail. It also asserts
-     `supervised_tokens` equals the global supervised-token count, not
-     a per-device average.
+     reproduces the single-device sum-form objective under a fixed expected
+     mask denominator. It also asserts `supervised_tokens` equals the global
+     supervised-token count, not a per-device average.
+  5. `test_mdlm_accumulated_uneven_mask_dp_parity`: same for the combined
+     device-by-accumulation path.
 - Loss/grads parity is checked at `atol=1e-5`. Post-update params are
   checked at `atol=1e-3` because Muon's Newton-Schulz iteration
   amplifies the floating-point summation-order differences between
@@ -1098,10 +1104,12 @@ Validation:
 - `python -m py_compile jax/training/loss.py jax/training/step.py
   jax/train_ar.py jax/tests/test_data_parallel_parity.py` passed.
 - `XLA_FLAGS=--xla_force_host_platform_device_count=2 JAX_PLATFORMS=cpu
-  python jax/tests/test_data_parallel_parity.py` passed (all 3 tests).
+  python jax/tests/test_data_parallel_parity.py` passed (all 5 tests).
 - `python jax/tests/test_diffusion_stack.py` still passes after the
   supervised-loss refactor.
 - `python jax/tests/test_training_stack.py` still passes.
+- Tiny synthetic MDLM trainer smoke passed on single-device CPU and simulated
+  2-device CPU pmap after switching the denominator.
 - `python jax/tests/test_parity.py` still passes (PyTorch parity, AR
   forward path unchanged).
 - `python jax/tests/test_parity_extras.py` still passes.

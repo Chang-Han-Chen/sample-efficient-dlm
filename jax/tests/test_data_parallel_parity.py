@@ -12,12 +12,12 @@ The tests are split into AR and MDLM:
   and a 2-device DP run on the sharded batch. Loss, grads, and post-update
   params must agree.
 * MDLM: same parity check, but with intentionally uneven supervise masks
-  across the two shards. This is the load-bearing test for the sum/count
-  reduction — under the previous mean-of-means code, this test would fail
-  on uneven masks.
+  across the two shards. This is the load-bearing test for the sum-form
+  reduction under a fixed expected-mask denominator.
 * `supervised_tokens` must equal the global supervised-token count after
   reduction (psum, not pmean).
-* After one DP step, the optimizer state must be identical across devices.
+* After one DP step, replicated model and optimizer state must be identical
+  across devices if NNX leaves an explicit device axis on the state leaves.
 """
 
 import os
@@ -28,25 +28,22 @@ os.environ.setdefault("XLA_FLAGS", "--xla_force_host_platform_device_count=2")
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import copy
-
 import numpy as np
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
 from transformer.transformer import Transformer
-from training.diffusion import (
-    DiffusionConfig,
-    make_model_context,
-    prepare_diffusion_training_batch,
-)
 from training.loss import supervised_lm_loss_sums
 from training.optimizer import NormuonAdamWConfig, create_normuon_adamw
 from training.step import (
     train_step,
+    train_step_accumulated,
+    train_step_accumulated_data_parallel,
     train_step_data_parallel,
     train_step_supervised,
+    train_step_supervised_accumulated,
+    train_step_supervised_accumulated_data_parallel,
     train_step_supervised_data_parallel,
 )
 
@@ -105,18 +102,20 @@ def _flat_param_arrays(model) -> dict[str, np.ndarray]:
     return out
 
 
-def _all_reduce_devices_equal(model) -> bool:
-    """For pmap'd state, every device replica should be bit-exact."""
-    for _, variable in nnx.to_flat_state(nnx.state(model, nnx.Param)):
-        arr = np.asarray(variable[...])
-        if arr.ndim == 0:
-            continue
-        # If a leading device axis is present, all slices must be equal.
-        if arr.shape[0] == NUM_DEVICES:
-            head = arr[0]
-            for d in range(1, NUM_DEVICES):
-                if not np.array_equal(arr[d], head):
-                    return False
+def _replicated_state_leaves_equal(*objects) -> bool:
+    """For pmap'd state, explicit device-axis replicas should be bit-exact."""
+    for obj in objects:
+        for _, variable in nnx.to_flat_state(nnx.state(obj)):
+            value = variable[...] if hasattr(variable, "__getitem__") else variable
+            arr = np.asarray(value)
+            if arr.ndim == 0:
+                continue
+            # If a leading device axis is present, all slices must be equal.
+            if arr.shape[0] == NUM_DEVICES:
+                head = arr[0]
+                for d in range(1, NUM_DEVICES):
+                    if not np.array_equal(arr[d], head):
+                        return False
     return True
 
 
@@ -190,7 +189,81 @@ def test_ar_single_vs_dp_parity():
             err_msg=f"AR DP-vs-single param mismatch at {key}",
         )
 
-    assert _all_reduce_devices_equal(model_dp), "AR DP optimizer state diverged across devices"
+    assert _replicated_state_leaves_equal(model_dp, opt_dp), "AR DP replicas diverged"
+
+
+def test_ar_accumulated_single_vs_dp_parity():
+    _require_two_devices()
+    rng = np.random.default_rng(12)
+    seq_len = 16
+    vocab_size = 32
+    accum_steps = 2
+    global_batch = 8
+    per_device_batch = global_batch // NUM_DEVICES
+
+    tokens = rng.integers(
+        0,
+        vocab_size,
+        size=(accum_steps, global_batch, seq_len + 1),
+        dtype=np.int32,
+    )
+    inputs_np = tokens[:, :, :-1].copy()
+    targets_np = tokens[:, :, 1:].copy()
+    inputs = jnp.asarray(inputs_np)
+    targets = jnp.asarray(targets_np)
+    inputs_dp = jnp.asarray(
+        np.swapaxes(
+            inputs_np.reshape(accum_steps, NUM_DEVICES, per_device_batch, seq_len),
+            0,
+            1,
+        )
+    )
+    targets_dp = jnp.asarray(
+        np.swapaxes(
+            targets_np.reshape(accum_steps, NUM_DEVICES, per_device_batch, seq_len),
+            0,
+            1,
+        )
+    )
+
+    model_single = _small_model(seed=43, vocab_size=vocab_size, seq_len=seq_len)
+    opt_single, _ = _small_optimizer(model_single)
+    model_dp = _small_model(seed=43, vocab_size=vocab_size, seq_len=seq_len)
+    opt_dp, _ = _small_optimizer(model_dp)
+
+    metrics_single = train_step_accumulated(
+        model_single, opt_single, inputs, targets, 0.0, 1.0, "full", 1024
+    )
+    metrics_dp_raw = train_step_accumulated_data_parallel(
+        model_dp, opt_dp, inputs_dp, targets_dp, 0.0, 1.0, "full", 1024
+    )
+    metrics_dp = jax.tree_util.tree_map(
+        lambda v: jnp.mean(v) if getattr(v, "shape", ()) != () else v, metrics_dp_raw
+    )
+
+    np.testing.assert_allclose(
+        float(metrics_single["loss"]), float(metrics_dp["loss"]), atol=1e-5, rtol=1e-5
+    )
+    np.testing.assert_allclose(
+        float(metrics_single["grad_norm"]), float(metrics_dp["grad_norm"]), atol=1e-5, rtol=1e-5
+    )
+
+    single_params = _flat_param_arrays(model_single)
+    dp_params = _flat_param_arrays(model_dp)
+    for key in single_params:
+        single_arr = single_params[key]
+        dp_arr = dp_params[key]
+        if dp_arr.ndim > single_arr.ndim and dp_arr.shape[0] == NUM_DEVICES:
+            dp_arr = dp_arr[0]
+        np.testing.assert_allclose(
+            single_arr,
+            dp_arr,
+            atol=1e-3,
+            rtol=1e-3,
+            err_msg=f"AR accumulated DP-vs-single param mismatch at {key}",
+        )
+
+    assert _replicated_state_leaves_equal(model_dp, opt_dp), "AR accumulated DP replicas diverged"
 
 
 def _make_mdlm_uneven_masked_batch(rng, vocab_size, seq_len, *, per_device_batch):
@@ -221,7 +294,7 @@ def _make_mdlm_uneven_masked_batch(rng, vocab_size, seq_len, *, per_device_batch
 
 def test_mdlm_uneven_mask_dp_parity():
     """Load-bearing: with uneven supervised counts across shards, the
-    weighted-mean reduction must reproduce the single-device global mean."""
+    sum-form reduction must reproduce the single-device global objective."""
     _require_two_devices()
     rng = np.random.default_rng(7)
     seq_len = 16
@@ -240,6 +313,8 @@ def test_mdlm_uneven_mask_dp_parity():
     shard1_count = int(supervise_np[per_device_batch:].sum())
     assert shard0_count != shard1_count, "test requires uneven mask counts"
     global_count = shard0_count + shard1_count
+    expected_mask_rate = 0.5
+    loss_normalizer = float(global_batch * seq_len * expected_mask_rate)
 
     inputs = jnp.asarray(inputs_np, dtype=jnp.int32)
     targets = jnp.asarray(targets_np, dtype=jnp.int32)
@@ -262,11 +337,11 @@ def test_mdlm_uneven_mask_dp_parity():
 
     metrics_single = train_step_supervised(
         model_single, opt_single, inputs, targets, supervise,
-        None, None, 0.0, 1.0, False, None, "full", 1024, None,
+        None, None, 0.0, 1.0, False, None, "full", 1024, None, loss_normalizer,
     )
     metrics_dp_raw = train_step_supervised_data_parallel(
         model_dp, opt_dp, inputs_dp, targets_dp, supervise_dp,
-        None, None, 0.0, 1.0, False, None, "full", 1024, None,
+        None, None, 0.0, 1.0, False, None, "full", 1024, None, loss_normalizer,
     )
     metrics_dp = jax.tree_util.tree_map(
         lambda v: jnp.mean(v) if getattr(v, "shape", ()) != () else v, metrics_dp_raw
@@ -280,6 +355,12 @@ def test_mdlm_uneven_mask_dp_parity():
         float(metrics_dp["total_loss"]),
         atol=1e-5,
         rtol=1e-5,
+    )
+    np.testing.assert_allclose(
+        float(metrics_single["loss_normalizer"]), loss_normalizer, atol=0.0
+    )
+    np.testing.assert_allclose(
+        float(metrics_dp["loss_normalizer"]), loss_normalizer, atol=0.0
     )
 
     # supervised_tokens must equal the global supervised-token count, not a
@@ -307,7 +388,122 @@ def test_mdlm_uneven_mask_dp_parity():
             err_msg=f"MDLM uneven-mask DP param mismatch at {key}",
         )
 
-    assert _all_reduce_devices_equal(model_dp), "MDLM DP optimizer state diverged across devices"
+    assert _replicated_state_leaves_equal(model_dp, opt_dp), "MDLM DP replicas diverged"
+
+
+def test_mdlm_accumulated_uneven_mask_dp_parity():
+    """Covers the D x A supervised reduction path with uneven counts across
+    both devices and accumulation microsteps."""
+    _require_two_devices()
+    rng = np.random.default_rng(17)
+    seq_len = 16
+    vocab_size = 33
+    accum_steps = 2
+    per_device_batch = 3
+    global_batch = per_device_batch * NUM_DEVICES
+
+    inputs_np = np.zeros((accum_steps, global_batch, seq_len), dtype=np.int32)
+    targets_np = np.zeros_like(inputs_np)
+    supervise_np = np.zeros((accum_steps, global_batch, seq_len), dtype=bool)
+    for a in range(accum_steps):
+        inputs_a, targets_a, supervise_a = _make_mdlm_uneven_masked_batch(
+            rng,
+            vocab_size,
+            seq_len,
+            per_device_batch=per_device_batch,
+        )
+        if a == 1:
+            supervise_a[:, :2] = ~supervise_a[:, :2]
+            inputs_a = targets_a.copy()
+            inputs_a[supervise_a] = vocab_size - 1
+        inputs_np[a] = inputs_a
+        targets_np[a] = targets_a
+        supervise_np[a] = supervise_a
+
+    global_count = int(supervise_np.sum())
+    expected_mask_rate = 0.5
+    loss_normalizer = float(accum_steps * global_batch * seq_len * expected_mask_rate)
+
+    inputs = jnp.asarray(inputs_np, dtype=jnp.int32)
+    targets = jnp.asarray(targets_np, dtype=jnp.int32)
+    supervise = jnp.asarray(supervise_np, dtype=bool)
+    inputs_dp = jnp.asarray(
+        np.swapaxes(
+            inputs_np.reshape(accum_steps, NUM_DEVICES, per_device_batch, seq_len),
+            0,
+            1,
+        ),
+        dtype=jnp.int32,
+    )
+    targets_dp = jnp.asarray(
+        np.swapaxes(
+            targets_np.reshape(accum_steps, NUM_DEVICES, per_device_batch, seq_len),
+            0,
+            1,
+        ),
+        dtype=jnp.int32,
+    )
+    supervise_dp = jnp.asarray(
+        np.swapaxes(
+            supervise_np.reshape(accum_steps, NUM_DEVICES, per_device_batch, seq_len),
+            0,
+            1,
+        ),
+        dtype=bool,
+    )
+
+    model_single = _small_model(seed=19, vocab_size=vocab_size, seq_len=seq_len, is_causal=False)
+    opt_single, _ = _small_optimizer(model_single)
+    model_dp = _small_model(seed=19, vocab_size=vocab_size, seq_len=seq_len, is_causal=False)
+    opt_dp, _ = _small_optimizer(model_dp)
+
+    metrics_single = train_step_supervised_accumulated(
+        model_single, opt_single, inputs, targets, supervise,
+        None, None, 0.0, 1.0, False, None, "full", 1024, None, loss_normalizer,
+    )
+    metrics_dp_raw = train_step_supervised_accumulated_data_parallel(
+        model_dp, opt_dp, inputs_dp, targets_dp, supervise_dp,
+        None, None, 0.0, 1.0, False, None, "full", 1024, None, loss_normalizer,
+    )
+    metrics_dp = jax.tree_util.tree_map(
+        lambda v: jnp.mean(v) if getattr(v, "shape", ()) != () else v, metrics_dp_raw
+    )
+
+    np.testing.assert_allclose(
+        float(metrics_single["loss"]), float(metrics_dp["loss"]), atol=1e-5, rtol=1e-5
+    )
+    np.testing.assert_allclose(
+        float(metrics_single["total_loss"]),
+        float(metrics_dp["total_loss"]),
+        atol=1e-5,
+        rtol=1e-5,
+    )
+    np.testing.assert_allclose(
+        float(metrics_single["supervised_tokens"]), float(global_count), atol=0.0
+    )
+    np.testing.assert_allclose(
+        float(metrics_dp["supervised_tokens"]), float(global_count), atol=0.0
+    )
+    np.testing.assert_allclose(
+        float(metrics_dp["loss_normalizer"]), loss_normalizer, atol=0.0
+    )
+
+    single_params = _flat_param_arrays(model_single)
+    dp_params = _flat_param_arrays(model_dp)
+    for key in single_params:
+        single_arr = single_params[key]
+        dp_arr = dp_params[key]
+        if dp_arr.ndim > single_arr.ndim and dp_arr.shape[0] == NUM_DEVICES:
+            dp_arr = dp_arr[0]
+        np.testing.assert_allclose(
+            single_arr,
+            dp_arr,
+            atol=1e-3,
+            rtol=1e-3,
+            err_msg=f"MDLM accumulated uneven-mask DP param mismatch at {key}",
+        )
+
+    assert _replicated_state_leaves_equal(model_dp, opt_dp), "MDLM accumulated DP replicas diverged"
 
 
 def test_supervised_loss_sums_basic_invariants():
@@ -347,8 +543,12 @@ def main():
     print("ok: supervised_loss_sums invariants")
     test_ar_single_vs_dp_parity()
     print("ok: AR single vs DP parity")
+    test_ar_accumulated_single_vs_dp_parity()
+    print("ok: AR accumulated single vs DP parity")
     test_mdlm_uneven_mask_dp_parity()
     print("ok: MDLM uneven-mask DP parity")
+    test_mdlm_accumulated_uneven_mask_dp_parity()
+    print("ok: MDLM accumulated uneven-mask DP parity")
     print("all data-parallel parity tests passed")
 
 

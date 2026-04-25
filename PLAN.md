@@ -1,372 +1,350 @@
-# PLAN: Efficient JAX Backbone and Optimizer for Language Diffusion Models
+# PLAN: Ablation Matrix for an Efficient Language Diffusion Model Backbone
 
-This document is written for a future AI agent working in this repository. Keep working independently until the `jax/` implementation is mathematically faithful to the PyTorch reference where intended, supports the planned diffusion experiments, and is efficient enough to make the experiment matrix finish quickly on a single A100 VM.
+This plan picks up after the JAX bring-up is complete. The training stack,
+optimizer, data pipeline, parity checks against PyTorch, and seq-512 profiling
+are all in place (see `PROGRESS.md`). The next phase is the controlled
+ablation matrix that answers the project's core scientific question.
+
+This document is written for a future AI agent. Keep working independently
+through the experiment matrix below until each phase has a documented winner
+or a clear reason to stop.
 
 ## Goal
 
-Find an efficient transformer backbone plus optimizer recipe for language diffusion models (LDMs).
+Find an efficient transformer backbone plus optimizer recipe for language
+diffusion models (LDMs).
 
-Part 1 is about the backbone, optimizer, data pipeline, and controlled ablations. Do not spend time on new LDM training algorithms beyond implementing MDLM and BD3LM faithfully enough (use `baby-dLM/` as the reference) to compare the same transformer interventions under diffusion training.
+The scientific question:
 
-The core scientific question:
+> Do architecture and optimization interventions that help autoregressive
+> language modeling also help diffusion language modeling?
 
-> Do architecture and optimization interventions that help autoregressive language modeling also help diffusion language modeling?
-
-The engineering question:
-
-> Can the JAX implementation run the required experiments faster, with better memory behavior, and with scalability hooks that make multi-device work straightforward later?
+The strategy is greedy and transitive: first find the AR winner, then find
+the MDLM winner. If both objectives converge on the same intervention bundle,
+we trust that the bundle also generalizes to BD3LM and only run BD3LM once at
+the end for confirmation. If AR and MDLM diverge, decide on the fly whether
+to run a targeted BD3LM ablation. This avoids the much-higher BD3LM wall-time
+cost (~2× slower per optimizer step at this shape) while still producing a
+recommendation we can defend.
 
 ## Repository Map
 
-- `pytorch/`: original `sample_efficient_gpt` PyTorch implementation. Treat this as the reference for the current autoregressive model and optimizer behavior.
-- `jax/`: active JAX port. At the time of writing, `jax/transformer/` contains `core.py`, `attention.py`, `rope.py`, and `transformer.py`.
-- `baby-dLM/`: PyTorch implementations and experiments for MDLM, and BD3LM. Use this for diffusion objective semantics and BD3 masking details. Notice that the current code is not perfect though! I struggled with FlexAttention and triton kernels. Refer to the original BD3LM repo [https://github.com/kuleshov-group/bd3lms.git] for more accurate details, especially code in `bd3lms/models/`.
-- `karpathy/`: reference single-GPU training and data preparation code. Use `prepare.py` as a reference for downloading Nvidia ClimbMix and training a BPE tokenizer, but adapt it to this project.
+- `jax/` — active code. Backbone, optimizer, data, training, diffusion,
+  configs, tests. This is where all experiments live now.
+- `jax/configs/experiments/` — canonical experiment configs. New runs MUST be
+  added here; do not rely on CLI flags as the source of truth.
+- `pytorch/` — reference autoregressive implementation. Keep only for parity
+  reference and historical comparison.
+- `baby-dLM/` — PyTorch MDLM/BD3LM reference. Consult for diffusion semantics
+  when in doubt; the upstream BD3LMs repo
+  (https://github.com/kuleshov-group/bd3lms.git) is the higher-fidelity
+  source.
+- `karpathy/` — reference data prep and training notes.
 
-## Non-Negotiables
+## Fixed Choices (do not re-litigate)
 
-1. Do not blindly port `pytorch/sample_efficient_gpt/transformer/ops/` to JAX.
-2. Profile seriously before adding custom kernels.
-3. Prefer native JAX/XLA/cuDNN first. Write Pallas or other manual kernels only for a measured bottleneck.
-4. Keep the PyTorch and JAX models mathematically aligned unless a planned ablation intentionally differs.
-5. Optimize for experiment runtime after profiling and implementation, not just single-step elegance. So something like runtime for 50 steps might be a good proxy.
-6. Use NorMuon+AdamW as the default optimizer path. Do not spend time on pure AdamW except as a named optimizer ablation if explicitly requested later.
+These are locked in for Part 1. Treat them as constants for every run; if
+profiling or a sanity check forces a revisit, document the reason in
+`PROGRESS.md` before launching the affected sweep.
 
-## Current Position on `ops/`
+- **Architecture shape**: `gpt_small_faster` (~70M params).
+  `d_model=768`, `d_ff=2048`, `n_layers=8`, `n_heads=12`, `n_kv_heads=None`.
+- **Tokenizer / data**: ClimbMix BPE, base vocab `8192`, diffusion vocab
+  `8193`, mask token id `8192`. Data root: `data/climbmix_smoke_8192/`.
+- **Sequence length**: `512` clean tokens. (BD3 internally doubles to 1024
+  via `x_t || x_0`.)
+- **Effective batch**: 512 sequences per optimizer step (262,144 tokens).
+- **Precision and attention**: bf16 with cuDNN attention
+  (`--attention-impl cudnn`).
+- **Weight tying**: ON (LM head shares the embedding `nnx.Param`).
+- **Optimizer**: NorMuon+AdamW with three LR families:
+  - table Adam (token embeddings + tied LM head + value-embedding tables)
+  - scalar Adam (RMSNorm gains, QK gains, value-residual scalars)
+  - Muon (matrix weights, with PyTorch-style shape LR multiplier)
+  Adam betas `(0.95, 0.99)`, Adam eps `1e-8`, Muon cautious WD `1e-4`,
+  momentum warmup `0.85 -> 0.95`.
+- **Default LR center**: `table=0.01`, `scalar=0.005`, `muon=0.04`. Sweep via
+  `--lr-mult` which scales all three together.
+- **Schedule**: 100-step linear warmup + 5000-step constant peak = 5100
+  total optimizer steps.
+- **Initialization**: default sample-efficient GPT init. No muP/non-muP
+  ablation.
+- **Loss path**: full logits for AR and MDLM; BD3 uses the noisy-stream
+  hidden slice + full projection. Chunked CE exists but is NOT used in main
+  runs (does not improve fixed-effective-batch wall time at vocab 8192).
+- **BD3 attention**: dense-mask path with cuDNN. The pure-JAX blocked
+  decomposition exists (`--bd3-attention blocked`) but is not faster on the
+  A100 at this shape; leave it off.
+- **Old intervention bundle (toggled together)**: QK-norm + value residual +
+  per-head attention gating + layernorm/depth scaling. This is a single
+  combined switch, NOT a factorial axis for the AR matrix.
+- **Value embeddings**: Karpathy-style alternating-layer placement (last
+  layer always included). Normalize the value-residual mixture first, then
+  add token value embeddings on top. See `jax/transformer/transformer.py`
+  for the exact formula. `gamma_ve_l=0` reproduces the no-value-embedding
+  baseline.
 
-Do not recreate `jax/transformer/ops/` as a copied Triton folder.
+## Hardware Plan
 
-The likely strategy is:
-
-- RMSNorm, SwiGLU, residual add, QK norm, and ordinary cross entropy: implement in pure JAX and rely on XLA fusion under `jit`.
-- Attention: use `jax.nn.dot_product_attention`; make the implementation selectable. Try `"cudnn"` on supported NVIDIA GPU, default/fallback to `"xla"` elsewhere. Avoid explicit GQA key/value repetition if JAX DPA can handle grouped query attention directly.
-- Fused linear cross entropy: keep this as the one serious candidate for a custom memory optimization. Start with a pure JAX chunked loss over the `(B*T)` axis using `lax.scan` or `lax.fori_loop` and a `custom_vjp`. Only write Pallas after profiling proves the pure JAX chunked version is too slow or too memory-hungry.
-
-Important nuance: ordinary CE fusion does not solve peak memory if the model has already materialized `(B*T, vocab)` logits. If memory is the limiter, refactor the model/loss API so the model can return final hidden states and the loss owns the `hidden @ lm_head.weight.T` projection chunking.
-
-## Equivalence Protocol
-
-Do not rely on "same random seed" alone to establish equivalence. Different frameworks and initializers can diverge enough to make loss comparisons noisy.
-
-Required checks:
-
-1. Unit-level parity: copy PyTorch weights into JAX modules and compare outputs for `Linear`, `Embedding`, `RMSNorm`, RoPE, attention variants, block, and full transformer.
-2. Loss parity: with copied weights and identical token batches, compare logits/loss for the AR objective.
-3. Training parity: train the baseline PyTorch and JAX models on the same data order for a short run, initially 50 to 200 optimizer steps after warmup/compilation. Compare loss curves, final loss, throughput, and memory.
-4. Optimizer parity: verify NorMuon+AdamW parameter grouping, schedules, width scaling, momentum warmup, cautious weight decay, and scalar/embedding/unembedding groups against the PyTorch implementation.
-
-The expected final losses should be nearly identical only when initial parameters, data order, loss formula, optimizer state, precision policy, and schedule are matched. If any of those differ, compare distributions/trends and document the reason.
-
-## Profiling Protocol
-
-Run performance work on a VM with one A100.
-
-Always report:
-
-- Model config, sequence length, vocab size, dtype, optimizer, and JAX/PyTorch versions.
-- Effective global tokens per optimizer step.
-- Device microbatch size and gradient accumulation steps.
-- Tokens/sec.
-- Step time split if possible: data loading, forward, backward, optimizer, compile.
-- MFU or model FLOP utilization. State the exact FLOP estimate and peak-FLOP denominator used.
-- Peak HBM usage and memory headroom.
-- JAX compilation time separately from steady-state step time.
-- Whether loss includes full logits, chunked logits, z-loss, softcap, BPB reporting, or diffusion reweighting.
-
-Benchmarking rules:
-
-- Exclude one-time compilation from steady-state throughput, but log it.
-- Use enough steps for stable numbers. For early work, 50 measured steps is acceptable after warmup; for final comparisons, use longer windows.
-- Sweep sequence length and batch shape for runtime, but keep experiments scientifically meaningful. Sequence length 512 or 768 is acceptable for intervention validation. Batch size 1 is not acceptable as an experiment proxy.
-- Search for the largest useful microbatch that fits with good MFU. If memory bound, prefer changes that increase effective batch per GPU without changing the experimental conclusion.
-
-## Data Plan
-
-Use one simplified stage-1 data pipeline based on Nvidia ClimbMix.
-
-Reference: `karpathy/prepare.py` downloads from `karpathy/climbmix-400b-shuffle` and trains a BPE tokenizer. Reuse the ideas, not the exact assumptions.
-
-Requirements:
-
-- Train/use the active project tokenizer with base vocab size `8192`.
-- For diffusion runs, add one extra diffusion mask token, so diffusion `vocab_size = 8192 + 1 = 8193` and mask token id is `8192`.
-- Produce deterministic train/validation splits.
-- Store artifacts in a predictable cache or repo-configured data directory.
-- Integrate with JAX training without forcing the PyTorch trainer abstractions into JAX.
-- Preserve enough metadata to reproduce a run: tokenizer config, shard list, validation shard/list, BPE pattern, special tokens, and seed.
-- Support fast streaming batches for one A100 without making data loading the bottleneck.
-
-Suggested implementation shape:
-
-- `jax/data/prepare_climbmix.py`: download shards, train tokenizer, write metadata.
-- `jax/data/loader.py`: deterministic token stream and batch iterator for AR, MDLM, and BD3LM.
-- `jax/configs/`: small typed configs or YAMLs for model, data, optimizer, and experiment sweeps.
-
-## Config Tracking
-
-All experiment configs must be written before launching the sweep. Do not rely on ad hoc CLI flags or notebook state as the source of truth.
-
-Use a structured config tree, for example:
+Default target: **2× A100** with
 
 ```text
-jax/configs/
-  data/climbmix_8192.yaml
-  model/gpt_small_70m.yaml
-  optimizer/normuon_adamw.yaml
-  schedule/ws_100_5k.yaml
-  experiments/
-    ar_baseline.yaml
-    ar_old_bundle.yaml
-    ar_value_embedding.yaml
-    mdlm_*.yaml
-    bd3lm_*.yaml
+--data-parallel --num-devices 2 --batch-size 512 --grad-accum-steps 1
 ```
 
-Each run config should fully resolve to:
+That gives 256 examples/GPU and no accumulation. The single-A100 fallback is
+`--batch-size 256 --grad-accum-steps 2`. Compare loss/eval metrics across
+these two shapes freely; compare wall time only within the same shape.
 
-- model architecture and intervention flags
-- tokenizer/data paths and vocab size
-- objective (`ar`, `mdlm`, `bd3lm`)
-- optimizer group LR base values and LR sweep multiplier
-- schedule
-- sequence length, effective batch size, microbatch size, and grad accumulation
-- dtype, attention implementation, checkpointing/remat settings, and loss implementation
-- W&B project/entity/group/tags
-- output/checkpoint directory
-- seed
+If 4+ GPUs become available later: `--num-devices 4 --batch-size 512
+--grad-accum-steps 1` (128 examples/GPU). Same effective batch.
 
-At launch time, save the resolved config next to local checkpoints and log it to W&B.
+## Compilation Cache
 
-## Backbone Plan
+A persistent JAX compilation cache is enabled by default in `train_ar.py` at
+`/tmp/sample_efficient_gpt_jax_cache`. It survives process restart, so any
+later run with identical shape and static args reuses the cached XLA
+executable and skips the ~30–40 s compile step.
 
-The JAX transformer should support:
+What this means in practice for the matrix:
 
-- Current sample-efficient GPT features:
-  - RMSNorm
-  - RoPE
-  - SwiGLU
-  - fixed attention head layout for the chosen architecture
-  - QK norm
-  - value residual
-  - attention gating modes
-  - optional weight tying
-  - depth/layernorm scaling if retained from the PyTorch code
-- New ablation feature:
-  - value embeddings, based on the `karpathy/train.py` implementation unless clarified otherwise.
+- **Within one experiment configuration** (same architecture flags, same
+  microbatch, same seq len, same dtype, same attention impl): all LR-sweep
+  runs after the first reuse the cache. Compile cost is paid once.
+- **Between configurations whose static args differ** (e.g., toggling
+  `qk_norm`, `value_residual`, `gating`, or switching
+  `--objective ar/mdlm/bd3lm`): one recompile per new key. The cache then
+  holds all keys, so future identical launches are free.
+- **Microbatch changes** recompile because the batch dim is part of the
+  static shape under `jit`. Keep microbatch fixed across the matrix
+  (current configs already do).
 
-Value embeddings need special care. The intended ablation is now the clean combined version: compute the normalized value-residual mixture first, using the raw first-layer value stream as the residual anchor, and only then add token value embeddings into the attention value stream. Do not cache or reuse a first-layer value stream that already includes value embeddings. This keeps the value-residual channel and token-value-embedding channel disentangled.
+Two pitfalls to watch:
 
-### Candidate Old Architecture Interventions
+1. `/tmp/` may be cleared on VM reboot. For long-running experiments,
+   override the default to a persistent path before launching:
 
-The old architecture interventions visible in the PyTorch configs/code are:
+   ```text
+   export JAX_COMPILATION_CACHE_DIR=/path/to/persistent/jax_cache
+   ```
 
-1. QK-norm: RMS-normalize query and key vectors before attention, with a learnable scalar gain on Q.
-2. Value residual: reuse the first layer's value stream in later attention layers through learnable scalar mixing.
-3. Attention gating: apply a learned gate to the attention output before the output projection. The final configs use `per-head`.
-4. LayerNorm/depth scaling: scale RMSNorm outputs by `rsqrt(layer_position)` when `layernorm_scaling=True`.
-5. Weight tying: share token embedding and LM head weights. Note that the original PyTorch implementation appears to have a wrapper bug here, so JAX should implement the intended behavior and parity tests should handle the PyTorch no-op carefully.
+   `train_ar.py` honors the env var.
+2. JAX/XLA version changes invalidate the cache. If you upgrade either,
+   expect one recompile per configuration.
 
-NorMuon is not an architecture ablation for this project. It is the default optimizer.
-
-GQA is not an ablation axis. Once the architecture is fixed, the head layout is fixed too. For the GPT sanity runs, use the small GPT architecture from `pytorch/sample_efficient_gpt/configs/gpt_small_faster.py`, approximately 70M params in the original setup:
-
-```text
-d_model = 768
-d_ff = 2048
-n_layers = 8
-n_heads = 12
-n_kv_heads = None unless explicitly fixed otherwise
-```
-
-For the current AR matrix, the old intervention bundle is confirmed as QK-norm + value residual + layernorm/depth scaling + per-head attention gating. Weight tying is on by default across all AR runs, not treated as an ablation axis.
-
-### Value Embedding Definition
-
-Use only the combined value-residual plus token value-embedding path below.
-
-Let `h_l` be the normalized layer input, `ids` the token ids, and:
-
-```text
-Q_l = h_l W_Q_l
-K_l = h_l W_K_l
-V_l = h_l W_V_l
-```
-
-For selected layers, use the Karpathy-style layer placement unless profiling or ablations say otherwise: alternating layers with the final layer always included.
-
-```text
-E_l(ids) in R[B, T, n_kv_heads, head_dim]
-g_l(h_l) = 2 * sigmoid(h_l[..., :gate_channels] W_gate_l)
-```
-
-Normalize the value-residual mixture before adding token value embeddings:
-
-```text
-V_first = raw first-layer value stream, before any token value-embedding addition
-V_res_l = s_l * (a_l * V_l + b_l * V_first) / sqrt(a_l^2 + b_l^2 + eps)
-V_attn_l = V_res_l + gamma_ve_l * g_l(h_l)[..., None] * E_l(ids)
-Y_l = Attention(Q_l, K_l, V_attn_l)
-```
-
-This is the only value-embedding ablation for this plan. It isolates the question "does adding token value embeddings help on top of the existing old-intervention recipe?" while preserving the existing value-residual normalization behavior.
-
-Implementation details:
-
-- Cache `V_first` from the raw first-layer `V_l = h_l W_V_l`, before adding any token value embedding.
-- Apply the `s_l * (...) / sqrt(a_l^2 + b_l^2 + eps)` normalization only to the local/first-layer value-residual mixture.
-- Add token value embeddings after that normalization. Do not include `E_1(ids)` inside the value-residual anchor unless running a separate explicit ablation.
-- Initialize value residual as before: `a_l=1`, `b_l=0`, `s_l=1`.
-- Expose `gamma_ve_l` or an equivalent global `value_embedding_scale` in config. For exact old-bundle initialization, set it to `0`; for a more literal Karpathy-style run, set it to `1` and control the path mostly through the value-embedding initialization scale.
-- Gate weights are initialized to zero, so `g_l = 1` at init; the path is controlled mostly by `value_embedding_scale` and the value-embedding initialization scale.
-
-## Initialization Decision
-
-Do not ablate non-muP initialization in Part 1. Keep the default sample-efficient GPT initialization as the only experiment path, and do not expose an experiment-level `init_mode` knob. Low-level initializer hooks may remain as implementation details, but configs and launch scripts should not include a non-muP run.
-
-## Optimizer Plan
-
-Default optimizer is NorMuon+AdamW.
-
-Port or reimplement:
-
-- Muon matrix groups for 2D transformer matrix parameters.
-- AdamW groups for token embeddings, value embeddings, unembedding/lm head, scalar/vector params, and other non-matrix params.
-- Width-based LR scaling from the PyTorch/Karpathy paths where intended.
-- Momentum warmup.
-- Cautious weight decay for Muon.
-- Schedule support used in the ablations.
-
-For Part 1 experiments, use a warmup-stable schedule:
-
-```text
-steps 0..99:    linear warmup from 0 to peak LR
-steps 100..5099: constant peak LR
-total:          5100 optimizer steps
-```
-
-Sweep peak learning rate. Because NorMuon+AdamW has multiple parameter groups, it might get tricky here. Read `karpathy/train.py` to understand how he scales the lr and the knobs we can tune. I expect AdamW has 1 lr, and NorMuon has 2. Start around the small GPT reference recipe or Karpathy's, and then sweep, for example:
-
-```text
-lr_mult in [0.25, 0.5, 1.0, 2.0, 4.0]
-```
-
-I suggest you to monitor the lr-sweep runs closely, because often times it is clear if a lr is good very early on. You can terminate the runs as soon as the result is obvious, e.g., grad norm too high, loss decay too slowly, etc. This would save a lot of time.
-
-Track at minimum train loss, eval loss, and global grad norm for every run.
-
-Keep optimizer ablations separate from the main port. The immediate baseline should not be pure AdamW.
-
-## Diffusion Plan
-
-Add MDLM and BD3LM training paths that share the same JAX transformer backbone.
-
-Use `baby-dLM/` as the semantic reference (but use [https://github.com/kuleshov-group/bd3lms.git] whenever confused; in fact, you might find it helpful to keep it on the side):
-
-- `model_MDLM.py`: MDLM objective and masking/noising behavior.
-- `model_bd3lm.py`, `backbone.py`, and `block_utils.py`: BD3 objective, block-diffusion masks, dual-stream training, and block-causal sampling.
-- Tests in `baby-dLM/tests/`: use as behavioral clues for edge cases.
-
-Architectural interventions must be toggled in the shared backbone, not duplicated separately for AR/MDLM/BD3LM.
-
-Very importantly, you should be careful about the implementation of attention mechanism!!
-MDLM uses no masking attention, while BD3LM uses a sparse 4-quadrant masking. In PyTorch, both could be efficient via FlashAttention and FlexAttention. But, our code is in Jax, and I am less certain about how it would be implemented. In particular, for BD3LM, because the input length is doubled at fixed sequence length (if you don't know why, read `baby-dLM/` first), the attention memory is very costly. In my experience, the batch size per step (resp. grad accumulations) need to be much smaller (resp. larger), so BD3LM trains very slowly. You should try very hard to optimize the wall-clock efficiency of BD3LM runs (which i think the key is to reduce peak memory so that grad accumulation can be small).
-We know the shape of all matrices because we fix the architechture config. This means that we could write hacky kernels that work at this particular model size (~70M as mentioned above). I was annoyed by FlexAttention because autocasting takes so long, but in our case, we can precompute the best setting beforehand.
+So yes — moving between experiments and phases with the same shape/static
+args does NOT recompile. Moving between objectives or architecture toggles
+recompiles once per key.
 
 ## Experiment Plan
 
-Phase A: JAX AR parity and speed
+### Phase 0: W&B Checkpoint Round-Trip Verification
 
-1. Finish the JAX training stack for AR.
-2. Verify parity with PyTorch on copied weights and identical batches.
-3. Benchmark PyTorch vs JAX on one A100.
-4. Profile memory and throughput.
-5. Optimize only measured bottlenecks.
+Before relying on W&B checkpoints to bridge sweeps and resume failed runs,
+verify the round-trip end-to-end on a real training loop. The unit and pmap
+checkpoint tests already passed (see `PROGRESS.md`), but the
+real-training-loop W&B resume path has not been load-bearing yet.
 
-Before ablations, profile sequence length and batch shape:
+This check is folded into Phase A (baseline AR) and Phase B (baseline MDLM)
+rather than running as a separate phase:
 
-1. Compare `seq_len=512` and `seq_len=768` on the A100. Based on the findings, feel free to try others or move on.
-2. Keep total effective batch fixed at 512 sequences for the profiling target, using gradient accumulation as needed. This means `512 * seq_len` tokens per optimizer step.
-3. Find the largest per-device microbatch that fits with healthy memory headroom.
-4. Pick the sequence length/microbatch/grad-accum setting that gives the shortest stable optimizer-step time without making the experiment scientifically meaningless.
+1. Train for 300 steps at default LR with W&B checkpoint upload enabled.
+2. Save the final checkpoint to W&B.
+3. Restart the trainer with `--restore-wandb-artifact <name>:final`.
+4. Train another 50–100 steps and confirm:
+   - loss continues to decay smoothly from where it left off (no jump,
+     NaN, or spike at the seam),
+   - tokens-per-second matches the original steady state,
+   - SHA256s in `metadata.json` match what W&B has.
 
-Phase B: GPT/AR sanity matrix
+If any check fails, fix the W&B checkpoint path before launching the rest
+of the matrix.
 
-Run exactly three GPT/AR runs unless profiling reveals a serious flaw:
+### Phase A: AR Ablation Matrix
 
-1. Baseline: old architecture interventions off, NorMuon+AdamW on.
-2. Old intervention bundle for the fixed small GPT architecture. For `gpt_small_faster`, this is at least QK-norm + value residual + layernorm/depth scaling.
-3. Add value embeddings: start from the old intervention bundle and use the value-embedding definition above, i.e. normalize the value-residual mixture first, then add token value embeddings. Keep value embeddings only if they improve.
+Run three AR configurations:
 
-Each of these three configurations needs an LR sweep under the 100-warmup + 5k-constant schedule. Compare each config by its best LR run, while keeping all LR sweep results logged.
+1. **Baseline** — `jax/configs/experiments/ar_baseline.yaml`. Old
+   interventions off, value embeddings off. Use the default LR center
+   directly (`--lr-mult 1.0`). Prior 300-step probes already established
+   that `table=0.01, scalar=0.005, muon=0.04` is the best bracket here;
+   do not re-sweep the baseline. The first 300 steps of this run double as
+   the Phase 0 W&B round-trip target for the AR path.
+2. **Old bundle** — `jax/configs/experiments/ar_old_bundle.yaml`. QK-norm
+   + value residual + per-head gating + layernorm/depth scaling.
+3. **Old bundle + value embeddings** —
+   `jax/configs/experiments/ar_value_embedding.yaml`.
 
-Do not rerun old GPT ablations one by one. They were already done before; this is only a sanity check that the bundled old interventions still beat the baseline in the JAX setup, plus a test of value embeddings.
+Configs 2 and 3 may need a small LR check because the architecture change
+can shift the useful LR. Probe `--lr-mult ∈ [0.5, 1.0, 2.0]` for 300 steps
+each (100 warmup + 200 constant); widen only if the best result lands at
+an edge.
 
-Phase C: MDLM and BD3LM
+LR sweep tactics:
 
-1. Add MDLM and BD3LM objectives on top of the same JAX backbone.
-2. Validate small deterministic cases against `baby-dLM/`.
-3. Benchmark and optimize enough that the diffusion runs are not dominated by avoidable overhead.
+- Kill probes early when the signal is obvious: grad norm spiking above
+  ~30, loss above ~5.5 at step 100, or an obviously flat curve.
+- Promote the top 1–2 LRs per configuration to the full 5100-step run.
 
-Phase D: Diffusion ablations
+Decision rule:
 
-Run serious one-by-one diffusion ablations under MDLM and BD3LM.
+- Compare each configuration by its best-LR full-length run on eval loss,
+  while logging all probe results.
+- Old bundle is expected to beat baseline; if it does not, treat that as
+  a bug or hyperparameter problem and investigate before moving to (3).
+- Keep value embeddings only if config 3 beats config 2 on eval loss at
+  matched best LR.
 
-Use a greedy sequential design, not a `2^N` factorial design:
+The AR winner is the input to Phases B–D as the default LR family.
 
-1. Start with the diffusion baseline.
-2. Add one candidate intervention.
-3. If it improves the chosen logged metrics, keep it for subsequent runs.
-4. If it does not improve, discard it for subsequent runs.
-5. Continue through the intervention list in a documented order.
+### Phase B: MDLM Baseline Validation
 
-This assumes positive interventions mostly stay positive with or without the others. If results look order-sensitive or contradictory, pause and document the issue rather than exploding into a full factorial matrix.
+Confirm MDLM trains cleanly at `seq_len=512`, effective batch 512 with the
+AR-selected LR family. Run a 300-step probe at default LR:
 
-The goal is to decide whether the AR-winning architecture plus optimizer is also the right LDM backbone recipe.
+1. The same probe doubles as the Phase 0 W&B round-trip test for the
+   diffusion path: save to W&B at step 300, restore, train another 50–100
+   steps, confirm smooth resumption.
+2. If train loss decays monotonically and grad norm stays bounded,
+   proceed to Phase C.
+3. If unstable, run a small LR probe (3 multipliers, 100 steps) only for
+   MDLM. Prior probes (`PROGRESS.md`) suggest the AR LR family transfers
+   to MDLM; only deviate if forced.
 
-## Suggested Metrics for Scientific Runs
+A BD3LM check is NOT required at this point; BD3LM only runs in Phase D.
+If you want to de-risk BD3LM earlier (recommended if you have spare time
+during the long AR runs), launch one 100-step BD3LM probe with the dense
+mask path at the AR LR family and just confirm it is stable. Do not
+ablate.
 
-Record at least:
+### Phase C: MDLM Ablation Matrix (greedy sequential)
 
-- Train loss curve.
-- Validation loss or bits-per-byte on a fixed validation set.
-- Global grad norm.
-- Tokens/sec and total wall time.
-- Peak memory.
-- Effective batch size and sequence length.
-- Run seed and data shard/window order.
-- Any compile time or first-step anomalies.
+Run a greedy sequential ablation for MDLM only. The working hypothesis is
+that interventions which help AR will also help MDLM; ablating MDLM
+directly tests the AR→diffusion transfer cheaply.
 
-Use Weights & Biases for run tracking if available:
+Start from the MDLM baseline (all interventions off, value embeddings
+off). Intervention order:
 
-- Log all train/eval losses as scalar histories.
-- Log the full config, git status/commit when available, profiler settings, and hardware metadata.
-- Log throughput, MFU, peak memory, compile time, grad accumulation, global grad norm, LR multiplier, and tokens per optimizer step.
-- Store checkpoints locally and upload at least final and best checkpoints as W&B artifacts. Uploading every checkpoint is useful only if artifact storage and bandwidth are acceptable; prefer sparse periodic checkpoints for large sweeps.
-- Use consistent tags/groups: `ar`, `mdlm`, `bd3lm`, `baseline`, `old_bundle`, `value_embedding`, `seq512`, `seq768`, etc.
+1. QK-norm
+2. Value residual
+3. Per-head attention gating
+4. Layernorm / depth scaling
+5. Value embeddings (combined placement)
 
-For diffusion:
+For each step:
 
-- Objective-specific loss.
-- If available, a comparable validation metric across MDLM/BD3LM.
-- Mask/noise schedule config.
-- Block length for BD3LM.
+1. Add the intervention on top of the previously-kept set.
+2. Train at the standard schedule (5100 steps, effective batch 512).
+3. If eval loss improves vs. the previous best for MDLM, keep it.
+4. If it does not improve, drop it and move to the next.
+
+Use the AR best-LR family by default. If a run becomes unstable, run a
+3-multiplier 100-step LR probe before deciding.
+
+Greedy assumption: positive interventions stay positive with or without
+each other. If results look order-sensitive (e.g., #4 helps only when #3
+is dropped), pause and document in `PROGRESS.md` rather than expanding to
+a factorial. As a sanity check, also run "all kept interventions on" vs.
+"greedy bundle" once at the end of the matrix if there is doubt.
+
+### Phase D: Cross-Objective Comparison and BD3LM Confirmation
+
+Compare the AR winner (Phase A) and the MDLM winner (Phase C):
+
+- **If the winning intervention sets agree**: run BD3LM once with the
+  agreed bundle plus once with the BD3LM baseline (no interventions).
+  Compare on eval loss. The expected outcome is that the bundle wins; if
+  it does, the recipe is confirmed.
+- **If they disagree**: decide on the fly between
+  - a targeted BD3LM ablation on only the disputed interventions, or
+  - running BD3LM at both candidate bundles and picking the better one.
+  Document the decision and rationale in `PROGRESS.md` before launching.
+
+Final comparison report:
+
+- Train and eval loss curves for the AR best, MDLM best, and BD3LM
+  confirmation runs.
+- Eval bits-per-byte for AR; comparable diffusion eval metric for MDLM
+  and BD3LM.
+- Tokens/sec, wall time, peak HBM, MFU.
+- Configuration diffs across the three winners.
+
+Deliverable: a recommendation in `PROGRESS.md` of the form "for LDM
+training under this regime, use {architecture set} plus NorMuon+AdamW
+with {LR family}." Note explicitly whether AR and MDLM agreed, and what
+BD3LM showed.
+
+## Per-Run Reporting Requirements
+
+Log every run to W&B (when configured) and to local JSONL. Required fields:
+
+- Resolved config (saved as `resolved_config.json` next to checkpoints
+  automatically when `--output-dir` is set).
+- Train loss, eval loss, z-loss, global grad norm — as scalar histories.
+- Tokens/sec, MFU (denominator: A100 SXM dense bf16 peak `312e12` FLOP/s).
+- Step time, compile time (logged separately), peak HBM (max across
+  devices, plus per-device peaks).
+- Effective batch size, microbatch, grad accumulation count, LR multiplier.
+- Run seed, data shard/window order.
+- W&B tags/groups: one of `ar` / `mdlm` / `bd3lm`; one of `baseline` /
+  `old_bundle` / `value_embedding` / sequential-ablation step name; plus
+  `seq512`, hardware tag.
+
+For diffusion runs, also log objective-specific metrics (mask rate stats,
+supervised-token count, BD3 block length) and a comparable validation
+metric across MDLM/BD3LM.
+
+Checkpointing:
+
+- Save `final` always; save `best` whenever eval loss improves.
+- Use sparse periodic checkpoints (`--checkpoint-interval`) only when
+  needed for a specific run.
+- W&B artifact upload is on by default; disable per-run with
+  `--no-wandb-checkpoints` if storage/bandwidth is tight.
+- Restore: `--restore-checkpoint <dir>` for local;
+  `--restore-wandb-artifact <name>:<alias>` for W&B.
+- The Phase 0 round-trip test (folded into Phase A and B) is what
+  certifies the W&B path before the matrix depends on it.
 
 ## Done Criteria for Part 1
 
 Part 1 is done when:
 
-1. JAX AR baseline is parity-checked against PyTorch and benchmarked on one A100.
-2. JAX AR baseline is at least as efficient as PyTorch for the chosen experimental regime, or any remaining gap is profiled and justified.
-3. Data preparation and loading for ClimbMix with vocab size 8192 are reproducible.
-4. NorMuon+AdamW is the default optimizer in JAX.
-5. All planned run configs are written before the first real sweep.
-6. Value embeddings are config-controlled.
-7. MDLM and BD3LM train on the shared JAX backbone.
-8. The selected AR and diffusion ablation matrix has been run or is runnable with clear commands.
-9. Results are logged in a way that supports choosing the final architecture plus optimizer recipe for LDMs.
+1. Phase 0 W&B checkpoint round-trip is verified for both AR (during the
+   baseline AR run) and MDLM (during the MDLM baseline run).
+2. Phase A AR matrix has run, with a winning AR configuration selected
+   from `{baseline, old_bundle, old_bundle + value_embedding}`.
+3. Phase C MDLM ablation has run, with a documented winning intervention
+   subset.
+4. Phase D ran BD3LM at least once at the appropriate bundle (agreed or
+   resolved-on-the-fly), and produced the recommended LDM
+   backbone+optimizer recipe in `PROGRESS.md`.
+5. All experiment configs are committed under
+   `jax/configs/experiments/`, and resolved configs are saved with their
+   checkpoints.
+6. Any divergence between AR-winning and MDLM-winning configurations is
+   documented with a hypothesis.
 
-## Current Operational Choices
+## Operational Notes
 
-- Do not worry about persistent volume setup for now; local data/cache paths on the A100 VM are acceptable during bring-up.
-- Do not rely on git automation in the agent workflow; the user will handle git separately.
-- Use W&B when available for real sweeps, but local JSONL logs and config files must be sufficient to inspect runs if W&B is not configured.
+- `train_ar.py` consumes configs via `--config` and supports `--lr-mult` for
+  sweeps. `resolved_config.json` is written automatically next to local
+  checkpoints when `--output-dir` is set; it is also logged to W&B.
+- W&B is the primary logger, but local JSONL logs MUST be sufficient to
+  inspect runs if W&B is not configured.
+- Checkpoints are msgpack files plus a `metadata.json` with step, metrics,
+  RNG states, and SHA256 hashes.
+- Multi-GPU data-parallel uses the `pmap` path. Eval currently runs single-
+  device; the trainer auto-sets `eval_batch_size = per_device_batch_size`
+  when `--data-parallel` is on. `eval_step_data_parallel` is an open
+  follow-up; only block on it if eval becomes the wall-time bottleneck.
+- For long runs across VM reboots, set `JAX_COMPILATION_CACHE_DIR` to a
+  persistent path so compile cost is paid only once per static-arg key
+  for the entire matrix.
+- When in doubt about diffusion semantics, consult `baby-dLM/` first, then
+  the upstream BD3LMs repo. Do not re-derive from scratch.
+- Git is handled by the user. Do not automate commits or pushes.
+- Persistent volume setup is not required during ablation runs; local
+  `data/` and checkpoint paths on the VM are acceptable. Move artifacts to
+  W&B for durability.

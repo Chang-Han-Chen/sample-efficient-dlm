@@ -56,10 +56,8 @@ def supervised_loss_fn(
     """Sum-form supervised loss used inside ``value_and_grad``.
 
     Returns ``(total_sum, metrics_sums)``. Each train step variant divides
-    by the appropriate count (local, ``psum``, or accumulated) to recover
-    the global masked-token mean. AR can use this same path because every
-    shard has the same valid-token count, but it currently uses the
-    cheaper ``loss_fn`` mean path.
+    by the requested denominator after local accumulation and/or device
+    ``psum``. AR currently uses the cheaper ``loss_fn`` mean path.
     """
     return supervised_lm_loss_sums(
         model,
@@ -77,12 +75,18 @@ def supervised_loss_fn(
     )
 
 
-def _safe_inv(count: Array) -> Array:
-    return jnp.where(count > 0, 1.0 / jnp.maximum(count, 1.0), 0.0)
+def _safe_inv(denominator: Array) -> Array:
+    return jnp.where(denominator > 0, 1.0 / denominator, 0.0)
 
 
 def _scale_grads(grads, scale: Array):
     return jax.tree_util.tree_map(lambda g: g * scale, grads)
+
+
+def _loss_denominator(loss_normalizer: float | Array | None, fallback_count: Array) -> Array:
+    if loss_normalizer is None:
+        return fallback_count
+    return jnp.asarray(loss_normalizer, dtype=jnp.float32)
 
 
 @functools.partial(nnx.jit, static_argnums=(6, 7))
@@ -267,6 +271,7 @@ def train_step_supervised(
     loss_impl: str = "full",
     logit_chunk_size: int = 1024,
     bd3_block_len: int | None = None,
+    loss_normalizer: float | Array | None = None,
 ):
     (total_sum, metrics_sums), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
         model,
@@ -283,7 +288,8 @@ def train_step_supervised(
         logit_chunk_size,
     )
     valid_count = metrics_sums["valid_count"]
-    inv = _safe_inv(valid_count)
+    denominator = _loss_denominator(loss_normalizer, valid_count)
+    inv = _safe_inv(denominator)
     grads = _scale_grads(grads, inv)
     clipped_grads, grad_norm = clip_by_global_norm(grads, max_grad_norm)
     optimizer.update(model, clipped_grads)
@@ -292,6 +298,7 @@ def train_step_supervised(
         "z_loss": metrics_sums["z_loss_sum"] * inv,
         "total_loss": total_sum * inv,
         "supervised_tokens": valid_count,
+        "loss_normalizer": denominator,
         "grad_norm": grad_norm,
     }
 
@@ -299,7 +306,7 @@ def train_step_supervised(
 @functools.partial(
     nnx.pmap,
     axis_name=DATA_AXIS,
-    in_axes=(BROADCAST_GRAPH_AXES, BROADCAST_GRAPH_AXES, 0, 0, 0, None, None, None, None, None, None, None, None, None),
+    in_axes=(BROADCAST_GRAPH_AXES, BROADCAST_GRAPH_AXES, 0, 0, 0, None, None, None, None, None, None, None, None, None, None),
     static_broadcasted_argnums=(9, 10, 11, 12, 13),
 )
 def train_step_supervised_data_parallel(
@@ -317,13 +324,13 @@ def train_step_supervised_data_parallel(
     loss_impl: str = "full",
     logit_chunk_size: int = 1024,
     bd3_block_len: int | None = None,
+    loss_normalizer: float | Array | None = None,
 ):
-    """Data-parallel supervised step with weighted-mean reduction.
+    """Data-parallel supervised step with sum-form loss reduction.
 
     Aggregates per-shard gradient sums via ``psum`` and divides by the
-    global supervised-token count. This matches the gradient of a single
-    masked-token mean over the whole global batch even when shards have
-    different supervised counts (uneven masks across devices).
+    requested global denominator. If ``loss_normalizer`` is not supplied,
+    this falls back to the global supervised-token count.
     """
     (total_sum, metrics_sums), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
         model,
@@ -344,7 +351,8 @@ def train_step_supervised_data_parallel(
     global_z_loss_sum = jax.lax.psum(metrics_sums["z_loss_sum"], DATA_AXIS)
     global_total_sum = jax.lax.psum(total_sum, DATA_AXIS)
     global_count = jax.lax.psum(metrics_sums["valid_count"], DATA_AXIS)
-    inv = _safe_inv(global_count)
+    denominator = _loss_denominator(loss_normalizer, global_count)
+    inv = _safe_inv(denominator)
     grads = _scale_grads(summed_grads, inv)
     clipped_grads, grad_norm = clip_by_global_norm(grads, max_grad_norm)
     optimizer.update(model, clipped_grads)
@@ -353,6 +361,7 @@ def train_step_supervised_data_parallel(
         "z_loss": global_z_loss_sum * inv,
         "total_loss": global_total_sum * inv,
         "supervised_tokens": global_count,
+        "loss_normalizer": denominator,
         "grad_norm": grad_norm,
     }
 
@@ -373,11 +382,13 @@ def train_step_supervised_accumulated(
     loss_impl: str = "full",
     logit_chunk_size: int = 1024,
     bd3_block_len: int | None = None,
+    loss_normalizer: float | Array | None = None,
 ):
-    """Accumulated supervised update with weighted-mean reduction.
+    """Accumulated supervised update with sum-form loss reduction.
 
     Sums per-microbatch gradient sums and supervised-token counts across
-    accum microsteps, then divides by the accumulated global count.
+    accum microsteps, then divides by ``loss_normalizer`` or the accumulated
+    supervised-token count.
     """
     accum_steps = inputs.shape[0]
     (total_sum, metrics_sums), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
@@ -421,7 +432,8 @@ def train_step_supervised_accumulated(
         summed_count = summed_count + metrics_i["valid_count"]
         summed_total_sum = summed_total_sum + total_sum_i
 
-    inv = _safe_inv(summed_count)
+    denominator = _loss_denominator(loss_normalizer, summed_count)
+    inv = _safe_inv(denominator)
     grads = _scale_grads(summed_grads, inv)
     clipped_grads, grad_norm = clip_by_global_norm(grads, max_grad_norm)
     optimizer.update(model, clipped_grads)
@@ -430,6 +442,7 @@ def train_step_supervised_accumulated(
         "z_loss": summed_z_loss_sum * inv,
         "total_loss": summed_total_sum * inv,
         "supervised_tokens": summed_count,
+        "loss_normalizer": denominator,
         "grad_norm": grad_norm,
     }
 
@@ -437,7 +450,7 @@ def train_step_supervised_accumulated(
 @functools.partial(
     nnx.pmap,
     axis_name=DATA_AXIS,
-    in_axes=(BROADCAST_GRAPH_AXES, BROADCAST_GRAPH_AXES, 0, 0, 0, None, None, None, None, None, None, None, None, None),
+    in_axes=(BROADCAST_GRAPH_AXES, BROADCAST_GRAPH_AXES, 0, 0, 0, None, None, None, None, None, None, None, None, None, None),
     static_broadcasted_argnums=(9, 10, 11, 12, 13),
 )
 def train_step_supervised_accumulated_data_parallel(
@@ -455,13 +468,13 @@ def train_step_supervised_accumulated_data_parallel(
     loss_impl: str = "full",
     logit_chunk_size: int = 1024,
     bd3_block_len: int | None = None,
+    loss_normalizer: float | Array | None = None,
 ):
     """Data-parallel supervised step with local gradient accumulation.
 
     Sums grads and supervised-token counts locally over accum microsteps,
-    then ``psum``s across devices, then divides by the global accumulated
-    count. Equivalent to a single masked-token mean over the full
-    effective batch (D * A microbatches), correct under uneven masks.
+    then ``psum``s across devices, then divides by ``loss_normalizer`` or
+    the global accumulated supervised-token count.
     """
     accum_steps = inputs.shape[0]
     (total_sum, metrics_sums), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
@@ -510,7 +523,8 @@ def train_step_supervised_accumulated_data_parallel(
     global_z_loss_sum = jax.lax.psum(summed_z_loss_sum, DATA_AXIS)
     global_count = jax.lax.psum(summed_count, DATA_AXIS)
     global_total_sum = jax.lax.psum(summed_total_sum, DATA_AXIS)
-    inv = _safe_inv(global_count)
+    denominator = _loss_denominator(loss_normalizer, global_count)
+    inv = _safe_inv(denominator)
     grads = _scale_grads(global_grads, inv)
     clipped_grads, grad_norm = clip_by_global_norm(grads, max_grad_norm)
     optimizer.update(model, clipped_grads)
@@ -519,6 +533,7 @@ def train_step_supervised_accumulated_data_parallel(
         "z_loss": global_z_loss_sum * inv,
         "total_loss": global_total_sum * inv,
         "supervised_tokens": global_count,
+        "loss_normalizer": denominator,
         "grad_norm": grad_norm,
     }
 
@@ -557,8 +572,9 @@ def eval_step_supervised(
     loss_impl: str = "full",
     logit_chunk_size: int = 1024,
     bd3_block_len: int | None = None,
+    loss_normalizer: float | Array | None = None,
 ):
-    _, metrics = supervised_lm_loss(
+    _, metrics = supervised_lm_loss_sums(
         model,
         inputs,
         targets,
@@ -572,4 +588,11 @@ def eval_step_supervised(
         loss_impl=loss_impl,
         logit_chunk_size=logit_chunk_size,
     )
-    return {"loss": metrics["loss"], "z_loss": metrics["z_loss"]}
+    denominator = _loss_denominator(loss_normalizer, metrics["valid_count"])
+    inv = _safe_inv(denominator)
+    return {
+        "loss": metrics["loss_sum"] * inv,
+        "z_loss": metrics["z_loss_sum"] * inv,
+        "supervised_tokens": metrics["valid_count"],
+        "loss_normalizer": denominator,
+    }

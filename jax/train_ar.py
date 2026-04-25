@@ -213,6 +213,14 @@ def scalarize_metrics(metrics: dict[str, jax.Array]) -> dict[str, jax.Array]:
     }
 
 
+def diffusion_expected_mask_rate(cfg: DiffusionConfig) -> float:
+    return 0.5 * (float(cfg.t_min) + float(cfg.t_max))
+
+
+def diffusion_loss_normalizer(batch_size: int, context_length: int, cfg: DiffusionConfig) -> float:
+    return float(batch_size) * float(context_length) * diffusion_expected_mask_rate(cfg)
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -383,6 +391,7 @@ def mean_eval_loss(
     fixed_t_step: int | None,
     loss_impl: str,
     logit_chunk_size: int,
+    loss_normalizer: float | None,
 ) -> dict[str, float]:
     totals = {"loss": 0.0, "z_loss": 0.0}
     for _ in range(batches):
@@ -415,6 +424,7 @@ def mean_eval_loss(
                 loss_impl,
                 logit_chunk_size,
                 model_context.bd3_block_len,
+                loss_normalizer,
             )
         totals["loss"] += float(jax.block_until_ready(metrics["loss"]))
         totals["z_loss"] += float(metrics["z_loss"])
@@ -625,6 +635,15 @@ def main():
     if restored_metadata is not None and restored_metadata.get("eval_rng_state") is not None:
         eval_rng.bit_generator.state = restored_metadata["eval_rng_state"]
     start_step = int(restored_metadata["step"]) + 1 if restored_metadata is not None else 0
+    train_loss_normalizer = (
+        None
+        if diffusion_cfg is None
+        else diffusion_loss_normalizer(
+            args.batch_size * args.grad_accum_steps,
+            args.context_length,
+            diffusion_cfg,
+        )
+    )
     checkpoint_dir = args.checkpoint_dir
     if checkpoint_dir is None and args.output_dir is not None:
         checkpoint_dir = args.output_dir / "checkpoints"
@@ -667,6 +686,10 @@ def main():
         "base_vocab_size": args.vocab_size,
         "model_vocab_size": model_vocab_size,
         "mask_token_id": None if diffusion_cfg is None else diffusion_cfg.mask_token_id,
+        "diffusion_loss_expected_mask_rate": (
+            None if diffusion_cfg is None else diffusion_expected_mask_rate(diffusion_cfg)
+        ),
+        "diffusion_loss_normalizer": train_loss_normalizer,
         "diffusion_steps": None if diffusion_cfg is None else diffusion_cfg.num_steps,
         "t_min": None if diffusion_cfg is None else diffusion_cfg.t_min,
         "t_max": None if diffusion_cfg is None else diffusion_cfg.t_max,
@@ -918,6 +941,7 @@ def main():
                         args.loss_impl,
                         args.logit_chunk_size,
                         model_context.bd3_block_len,
+                        train_loss_normalizer,
                     )
                 else:
                     step_fn = (
@@ -940,6 +964,7 @@ def main():
                         args.loss_impl,
                         args.logit_chunk_size,
                         model_context.bd3_block_len,
+                        train_loss_normalizer,
                     )
             if args.data_parallel:
                 metrics = scalarize_metrics(metrics)
@@ -966,12 +991,23 @@ def main():
             }
             if "supervised_tokens" in metrics:
                 row["supervised_tokens"] = float(metrics["supervised_tokens"])
+            if "loss_normalizer" in metrics:
+                row["loss_normalizer"] = float(metrics["loss_normalizer"])
             if eval_dataset is not None and step % args.log_every == 0:
                 # When data-parallel is on, the global batch is sized to fit only
                 # after sharding to ``num_devices``. Eval here runs through a
                 # single-device JIT, so use the per-device shard size to avoid
                 # OOM in the eval path even though training fits.
                 eval_batch_size = per_device_batch_size if args.data_parallel else args.batch_size
+                eval_loss_normalizer = (
+                    None
+                    if diffusion_cfg is None
+                    else diffusion_loss_normalizer(
+                        eval_batch_size,
+                        args.context_length,
+                        diffusion_cfg,
+                    )
+                )
                 eval_metrics = mean_eval_loss(
                     model,
                     eval_dataset,
@@ -984,6 +1020,7 @@ def main():
                     fixed_t_step=eval_fixed_t_step,
                     loss_impl=args.loss_impl,
                     logit_chunk_size=args.logit_chunk_size,
+                    loss_normalizer=eval_loss_normalizer,
                 )
                 row["eval_loss"] = eval_metrics["loss"]
                 row["eval_z_loss"] = eval_metrics["z_loss"]
