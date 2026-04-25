@@ -21,6 +21,9 @@ value embeddings, and non-muP/hidden-dimension initialization.
 - Treat the "old architecture" profile as QK-norm + value residual +
   layernorm/depth scaling + per-head attention gating, with weight tying still
   enabled.
+- Treat MDLM peak LRs as likely shared with the AR-selected LR family unless a
+  run becomes unstable. Do not spend time on a separate MDLM LR sweep; use only
+  short sanity probes when changing model/objective shape.
 
 ## Implemented Backbone Features
 
@@ -953,13 +956,61 @@ Experiment configs now default to the 2-GPU shape: `data_parallel=true`,
 
 ## MDLM Baseline Notes
 
-The first MDLM baseline probe is valid and should be considered:
+Single-A100 MDLM probes used the same effective batch as the target runs:
+`batch_size=256`, `grad_accum=2`, effective batch 512. Compare these loss/eval
+metrics directly with future 2-GPU runs, but compare wall time separately
+because the accumulation and hardware shape differ.
 
 | setting | result |
 | --- | --- |
 | `table=0.01`, `scalar=0.005`, `muon=0.04`; single A100; `batch_size=256`, `grad_accum=2`; 300 steps | final train loss `5.103`, last fixed-t eval loss `4.811`, grad `0.394`, z `97.8`, avg measured step `1.987s`, clean tok/s `132k`, MFU `19.2%`, peak HBM `61.14 GB` |
+| `table=0.003`, `scalar=0.005`, `muon=0.04`; same shape; 300 steps | final train loss `5.093`, last fixed-t eval loss `4.778`, grad `0.310`, z `105.7`, avg measured step `2.059s`, clean tok/s `127k`, MFU `18.5%`, peak HBM `61.23 GB` |
 
-This was not a planned MDLM sweep run because it launched before the 2-GPU
-default was decided, but it is still a useful baseline LR datapoint. Compare
-future 2-GPU runs on loss/eval metrics directly; compare wall time separately
-because the hardware and accumulation shape differ.
+Interpretation: `table=0.003` and `table=0.01` are in the same performance
+band for MDLM. The slightly better eval at `0.003` is not enough to justify a
+separate MDLM-specific LR search. For now, carry the AR LR candidates into MDLM
+and spend experiment time on architecture/objective comparisons. If a future
+change needs a stability check, use a cheap 100-step probe with 10 warmup steps
+and 90 constant steps.
+
+Why MDLM is slower per step than AR at the same clean sequence length:
+
+- AR uses causal attention, so the attention score/value work is triangular.
+- MDLM is bidirectional with no attention mask, so attention pays the full
+  `T x T` work.
+- The final vocab projection/loss and most MLP work are similar between AR and
+  MDLM; MDLM-specific token noising and masked CE bookkeeping are small.
+- The measured MFU is lower for MDLM because the full-attention path is more
+  expensive while still not dominating enough to make the step as matmul-dense
+  as large AR microbatches.
+
+## Checkpoint/W&B Artifact Status
+
+- W&B model artifact upload/download was smoke-tested with a tiny linear
+  regression checkpoint on 2026-04-25. The downloaded artifact matched the
+  original weights exactly by array comparison and SHA256.
+- The temporary smoke script was deleted after the check.
+- `train_ar.py` now saves real checkpoints. Each checkpoint directory contains
+  `model.msgpack`, `optimizer.msgpack`, `metadata.json`, and
+  `resolved_config.json`.
+- Checkpoint metadata records the step, metrics, RNG states, and SHA256 hashes
+  for model and optimizer state files.
+- If `--output-dir` is set, the default local checkpoint directory is
+  `<output_dir>/checkpoints`. The trainer saves `final` by default, saves `best`
+  when eval loss is available and improves, and supports sparse periodic saves
+  through `--checkpoint-interval`.
+- W&B checkpoint artifacts are enabled by default when W&B is enabled. The
+  trainer uploads final and best local checkpoints as model artifacts. Disable
+  this with `--no-wandb-checkpoints`.
+- Restore paths:
+  - local: `--restore-checkpoint path/to/checkpoint_dir`
+  - W&B: `--restore-wandb-artifact artifact-name:alias`
+- Verified:
+  - unit round-trip restores every model parameter and optimizer-state leaf.
+  - actual `train_ar.py` local save and local restore smoke passed.
+  - actual `train_ar.py` W&B final-checkpoint artifact upload passed.
+  - actual `train_ar.py --restore-wandb-artifact
+    train-ar-checkpoint-smoke-checkpoint-final:final` downloaded the artifact,
+    restored step `0`, resumed at step `1`, and saved a new final checkpoint.
+  - simulated 2-device CPU pmap checkpoint save passed, and that checkpoint
+    restored into a non-pmap trainer smoke.

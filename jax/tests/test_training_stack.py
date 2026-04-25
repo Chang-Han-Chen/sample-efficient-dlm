@@ -2,6 +2,8 @@
 
 import os
 import sys
+import tempfile
+from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
@@ -22,6 +24,7 @@ from training.loss import (
     cross_entropy_with_z_loss,
     linear_cross_entropy_with_z_loss_chunked,
 )
+from train_ar import restore_training_checkpoint, save_training_checkpoint
 
 
 def _small_model():
@@ -202,10 +205,71 @@ def test_chunked_ar_loss_matches_full_loss():
     )
 
 
+def test_training_checkpoint_roundtrip_restores_model_and_optimizer():
+    model = _small_model()
+    opt_cfg = NormuonAdamWConfig(
+        table_adam_lr=1e-3,
+        scalar_adam_lr=1e-3,
+        muon_lr=3e-3,
+        muon_weight_decay=0.0,
+        warmup_steps=1,
+    )
+    optimizer = nnx.Optimizer(model, create_normuon_adamw(model, opt_cfg), wrt=nnx.Param)
+
+    rng = np.random.default_rng(3)
+    tokens = rng.integers(0, 32, size=(4, 17), dtype=np.int32)
+    inputs = jnp.asarray(tokens[:, :-1], dtype=jnp.int32)
+    targets = jnp.asarray(tokens[:, 1:], dtype=jnp.int32)
+    metrics = train_step(model, optimizer, inputs, targets, 1e-4, 1.0)
+    metrics = {key: float(jax.block_until_ready(value)) for key, value in metrics.items()}
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint_path = Path(tmpdir) / "ckpt"
+        metadata = save_training_checkpoint(
+            checkpoint_path=checkpoint_path,
+            model=model,
+            optimizer=optimizer,
+            step=7,
+            kind="test",
+            metrics=metrics,
+            resolved_config={"test": True},
+            rng_state=rng.bit_generator.state,
+        )
+
+        restored_model = _small_model()
+        restored_optimizer = nnx.Optimizer(
+            restored_model,
+            create_normuon_adamw(restored_model, opt_cfg),
+            wrt=nnx.Param,
+        )
+        restored_metadata = restore_training_checkpoint(
+            checkpoint_path,
+            restored_model,
+            restored_optimizer,
+        )
+        assert restored_metadata["step"] == 7
+        assert restored_metadata["state_files"]["model"]["sha256"] == metadata["state_files"]["model"]["sha256"]
+
+    for (path_a, value_a), (path_b, value_b) in zip(
+        nnx.to_flat_state(nnx.state(model, nnx.Param)),
+        nnx.to_flat_state(nnx.state(restored_model, nnx.Param)),
+        strict=True,
+    ):
+        assert path_a == path_b
+        np.testing.assert_array_equal(np.asarray(value_a[...]), np.asarray(value_b[...]))
+
+    optimizer_leaves = jax.tree_util.tree_leaves(nnx.to_pure_dict(nnx.state(optimizer)))
+    restored_optimizer_leaves = jax.tree_util.tree_leaves(nnx.to_pure_dict(nnx.state(restored_optimizer)))
+    assert len(optimizer_leaves) == len(restored_optimizer_leaves)
+    for value_a, value_b in zip(optimizer_leaves, restored_optimizer_leaves, strict=True):
+        np.testing.assert_array_equal(np.asarray(value_a), np.asarray(value_b))
+
+
 if __name__ == "__main__":
     test_param_grouping()
     test_normuon_adamw_train_step_decreases_fixed_batch_loss()
     test_gradient_accumulation_train_step_decreases_fixed_batch_loss()
     test_chunked_linear_ce_matches_full_value_and_grad()
     test_chunked_ar_loss_matches_full_loss()
+    test_training_checkpoint_roundtrip_restores_model_and_optimizer()
     print("TRAINING STACK TESTS PASSED")

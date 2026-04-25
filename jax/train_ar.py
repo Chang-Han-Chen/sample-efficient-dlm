@@ -9,8 +9,10 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -20,7 +22,7 @@ import jax
 import jaxlib
 import jax.numpy as jnp
 import numpy as np
-from flax import nnx
+from flax import nnx, serialization
 
 from transformer.transformer import Transformer
 from training.data import MemoryMappedTokenDataset
@@ -58,6 +60,19 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--run-name", type=str, default=None)
     p.add_argument("--output-dir", type=Path, default=None)
+    p.add_argument("--checkpoint-dir", type=Path, default=None)
+    p.add_argument("--checkpoint-interval", type=int, default=0)
+    p.add_argument("--restore-checkpoint", type=Path, default=None)
+    p.add_argument("--restore-wandb-artifact", type=str, default=None)
+    p.add_argument(
+        "--wandb-artifact-dir",
+        type=Path,
+        default=Path(os.environ.get("WANDB_ARTIFACT_DIR", "/tmp/sample_efficient_gpt_wandb_artifacts")),
+    )
+    p.add_argument("--no-save-final-checkpoint", dest="save_final_checkpoint", action="store_false")
+    p.add_argument("--no-save-best-checkpoint", dest="save_best_checkpoint", action="store_false")
+    p.add_argument("--no-wandb-checkpoints", dest="wandb_checkpoints", action="store_false")
+    p.set_defaults(save_final_checkpoint=True, save_best_checkpoint=True, wandb_checkpoints=True)
     p.add_argument("--no-wandb", dest="wandb", action="store_false", help=argparse.SUPPRESS)
     p.set_defaults(wandb=True)
     p.add_argument("--wandb-entity", type=str, default="y38283929-uc-berkeley-electrical-engineering-computer-sc")
@@ -146,7 +161,14 @@ def parse_args():
         unknown = sorted(set(train_args) - valid_dests)
         if unknown:
             raise ValueError(f"{pre_args.config}: unknown train_args keys: {unknown}")
-        path_keys = {"log_jsonl", "compilation_cache_dir", "output_dir"}
+        path_keys = {
+            "checkpoint_dir",
+            "compilation_cache_dir",
+            "log_jsonl",
+            "output_dir",
+            "restore_checkpoint",
+            "wandb_artifact_dir",
+        }
         defaults = {
             key: Path(value) if key in path_keys and value is not None else value
             for key, value in train_args.items()
@@ -190,6 +212,163 @@ def scalarize_metrics(metrics: dict[str, jax.Array]) -> dict[str, jax.Array]:
         key: jnp.mean(value) if getattr(value, "shape", ()) != () else value
         for key, value in metrics.items()
     }
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_bytes_atomic(path: Path, data: bytes) -> None:
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    tmp_path.write_bytes(data)
+    tmp_path.replace(path)
+
+
+def write_json_atomic(path: Path, payload: dict) -> None:
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    with tmp_path.open("w") as fh:
+        json.dump(payload, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    tmp_path.replace(path)
+
+
+def save_training_checkpoint(
+    checkpoint_path: Path,
+    model,
+    optimizer,
+    *,
+    step: int,
+    kind: str,
+    metrics: dict[str, float],
+    resolved_config: dict,
+    rng_state: dict | None = None,
+    dataset_rng_state: dict | None = None,
+    eval_rng_state: dict | None = None,
+) -> dict:
+    """Save model params and optimizer state in a simple restore-tested format."""
+    if checkpoint_path.exists():
+        shutil.rmtree(checkpoint_path)
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+    model_path = checkpoint_path / "model.msgpack"
+    optimizer_path = checkpoint_path / "optimizer.msgpack"
+    config_path = checkpoint_path / "resolved_config.json"
+    metadata_path = checkpoint_path / "metadata.json"
+
+    model_state = jax.device_get(nnx.to_pure_dict(nnx.state(model, nnx.Param)))
+    optimizer_state = jax.device_get(nnx.to_pure_dict(nnx.state(optimizer)))
+    write_bytes_atomic(model_path, serialization.to_bytes(model_state))
+    write_bytes_atomic(optimizer_path, serialization.to_bytes(optimizer_state))
+    write_json_atomic(config_path, resolved_config)
+
+    metadata = {
+        "format_version": 1,
+        "kind": kind,
+        "step": int(step),
+        "metrics": metrics,
+        "state_files": {
+            "model": {
+                "path": model_path.name,
+                "sha256": sha256_file(model_path),
+            },
+            "optimizer": {
+                "path": optimizer_path.name,
+                "sha256": sha256_file(optimizer_path),
+            },
+        },
+        "rng_state": rng_state,
+        "dataset_rng_state": dataset_rng_state,
+        "eval_rng_state": eval_rng_state,
+    }
+    write_json_atomic(metadata_path, metadata)
+    return metadata
+
+
+def restore_training_checkpoint(checkpoint_path: Path, model, optimizer) -> dict:
+    metadata_path = checkpoint_path / "metadata.json"
+    model_path = checkpoint_path / "model.msgpack"
+    optimizer_path = checkpoint_path / "optimizer.msgpack"
+    with metadata_path.open() as fh:
+        metadata = json.load(fh)
+
+    expected_model_hash = metadata.get("state_files", {}).get("model", {}).get("sha256")
+    expected_optimizer_hash = metadata.get("state_files", {}).get("optimizer", {}).get("sha256")
+    if expected_model_hash is not None and sha256_file(model_path) != expected_model_hash:
+        raise ValueError(f"model checkpoint hash mismatch in {checkpoint_path}")
+    if expected_optimizer_hash is not None and sha256_file(optimizer_path) != expected_optimizer_hash:
+        raise ValueError(f"optimizer checkpoint hash mismatch in {checkpoint_path}")
+
+    model_target = nnx.to_pure_dict(nnx.state(model, nnx.Param))
+    restored_model = serialization.from_bytes(model_target, model_path.read_bytes())
+    model_state = nnx.state(model, nnx.Param)
+    nnx.replace_by_pure_dict(model_state, restored_model)
+    nnx.update(model, model_state)
+
+    optimizer_target = nnx.to_pure_dict(nnx.state(optimizer))
+    restored_optimizer = serialization.from_bytes(optimizer_target, optimizer_path.read_bytes())
+    optimizer_state = nnx.state(optimizer)
+    nnx.replace_by_pure_dict(optimizer_state, restored_optimizer)
+    nnx.update(optimizer, optimizer_state)
+
+    return metadata
+
+
+def sanitized_artifact_name(value: str) -> str:
+    sanitized = "".join(c if c.isalnum() or c in "._-" else "-" for c in value)
+    return sanitized.strip(".-") or "jax-train-checkpoint"
+
+
+def upload_checkpoint_artifact(wandb_run, checkpoint_path: Path, *, kind: str) -> None:
+    import wandb
+
+    base_name = wandb_run.name or wandb_run.id or "jax-train"
+    artifact_name = sanitized_artifact_name(f"{base_name}-checkpoint-{kind}")
+    metadata_path = checkpoint_path / "metadata.json"
+    with metadata_path.open() as fh:
+        metadata = json.load(fh)
+    step = int(metadata.get("step", 0))
+    artifact = wandb.Artifact(
+        artifact_name,
+        type="model",
+        metadata={
+            "kind": kind,
+            "step": step,
+            "checkpoint_format_version": metadata.get("format_version", 1),
+            "loss": metadata.get("metrics", {}).get("loss"),
+            "eval_loss": metadata.get("metrics", {}).get("eval_loss"),
+        },
+    )
+    artifact.add_dir(str(checkpoint_path))
+    logged = wandb_run.log_artifact(artifact, aliases=[kind, f"step-{step}"])
+    logged.wait()
+
+
+def download_checkpoint_artifact(
+    artifact_spec: str,
+    *,
+    entity: str,
+    project: str,
+    root: Path,
+) -> Path:
+    import wandb
+
+    artifact_ref = (
+        artifact_spec
+        if artifact_spec.split(":", 1)[0].count("/") >= 2
+        else f"{entity}/{project}/{artifact_spec}"
+    )
+    download_root = root / sanitized_artifact_name(artifact_spec.replace(":", "-"))
+    artifact = wandb.Api().artifact(artifact_ref, type="model")
+    downloaded = Path(artifact.download(root=str(download_root)))
+    if not (downloaded / "metadata.json").exists():
+        raise FileNotFoundError(
+            f"W&B artifact {artifact_ref!r} did not download as a train_ar.py checkpoint"
+        )
+    return downloaded
 
 
 def mean_eval_loss(
@@ -277,6 +456,10 @@ def estimate_training_flops_per_token(
 
 def main():
     args = parse_args()
+    if args.checkpoint_interval < 0:
+        raise ValueError("--checkpoint-interval must be non-negative")
+    if args.restore_checkpoint is not None and args.restore_wandb_artifact is not None:
+        raise ValueError("Use either --restore-checkpoint or --restore-wandb-artifact, not both")
     if args.disable_compilation_cache:
         jax.config.update("jax_enable_compilation_cache", False)
     else:
@@ -369,6 +552,34 @@ def main():
         momentum_warmup_start=args.momentum_warmup_start,
     )
     optimizer = nnx.Optimizer(model, create_normuon_adamw(model, opt_cfg), wrt=nnx.Param)
+    restored_metadata = None
+    restore_checkpoint_path = args.restore_checkpoint
+    if args.restore_wandb_artifact is not None:
+        restore_checkpoint_path = download_checkpoint_artifact(
+            args.restore_wandb_artifact,
+            entity=args.wandb_entity,
+            project=args.wandb_project,
+            root=args.wandb_artifact_dir,
+        )
+        print(
+            "downloaded_wandb_checkpoint:",
+            {
+                "artifact": args.restore_wandb_artifact,
+                "path": str(restore_checkpoint_path),
+            },
+            flush=True,
+        )
+    if restore_checkpoint_path is not None:
+        restored_metadata = restore_training_checkpoint(restore_checkpoint_path, model, optimizer)
+        print(
+            "restored_checkpoint:",
+            {
+                "path": str(restore_checkpoint_path),
+                "step": restored_metadata.get("step"),
+                "kind": restored_metadata.get("kind"),
+            },
+            flush=True,
+        )
     trainable_params = count_parameters(model)
     compute_params = estimate_compute_parameters(
         trainable_params,
@@ -406,12 +617,41 @@ def main():
             args.context_length,
             seed=args.seed + 1,
         )
+    if restored_metadata is not None:
+        if restored_metadata.get("rng_state") is not None:
+            rng.bit_generator.state = restored_metadata["rng_state"]
+        if dataset is not None and restored_metadata.get("dataset_rng_state") is not None:
+            dataset.rng.bit_generator.state = restored_metadata["dataset_rng_state"]
+
+    eval_rng = np.random.default_rng(args.seed + 1_000_003)
+    if restored_metadata is not None and restored_metadata.get("eval_rng_state") is not None:
+        eval_rng.bit_generator.state = restored_metadata["eval_rng_state"]
+    start_step = int(restored_metadata["step"]) + 1 if restored_metadata is not None else 0
+    checkpoint_dir = args.checkpoint_dir
+    if checkpoint_dir is None and args.output_dir is not None:
+        checkpoint_dir = args.output_dir / "checkpoints"
+    checkpointing_enabled = checkpoint_dir is not None and (
+        args.checkpoint_interval > 0
+        or args.save_final_checkpoint
+        or args.save_best_checkpoint
+    )
+    if checkpointing_enabled:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     resolved_config = {
         "objective": args.objective,
         "config": None if args.config is None else str(args.config),
         "run_name": args.run_name,
         "output_dir": None if args.output_dir is None else str(args.output_dir),
+        "checkpoint_dir": None if not checkpointing_enabled else str(checkpoint_dir),
+        "checkpoint_interval": args.checkpoint_interval,
+        "restore_checkpoint": None if restore_checkpoint_path is None else str(restore_checkpoint_path),
+        "restore_wandb_artifact": args.restore_wandb_artifact,
+        "wandb_artifact_dir": str(args.wandb_artifact_dir),
+        "start_step": start_step,
+        "save_final_checkpoint": args.save_final_checkpoint,
+        "save_best_checkpoint": args.save_best_checkpoint,
+        "wandb_checkpoints": args.wandb_checkpoints,
         "wandb": args.wandb,
         "wandb_entity": args.wandb_entity,
         "wandb_project": args.wandb_project,
@@ -556,14 +796,15 @@ def main():
         if diffusion_cfg is not None
         else None
     )
-    eval_rng = np.random.default_rng(args.seed + 1_000_003)
-
     compile_start = time.perf_counter()
     first_metrics = None
     measured_time = 0.0
     measured_steps = 0
+    best_eval_loss = None
+    checkpoint_paths: dict[str, Path] = {}
+    last_row = None
     try:
-        for step in range(args.max_steps):
+        for step in range(start_step, args.max_steps):
             data_start = time.perf_counter()
             batches = []
             for _ in range(args.grad_accum_steps):
@@ -744,6 +985,7 @@ def main():
                 )
                 row["eval_loss"] = eval_metrics["loss"]
                 row["eval_z_loss"] = eval_metrics["z_loss"]
+            last_row = row
 
             if step % args.log_every == 0:
                 eval_text = f" eval_loss={row['eval_loss']:.4f}" if "eval_loss" in row else ""
@@ -766,6 +1008,45 @@ def main():
                 log_fh.flush()
             if wandb_run is not None:
                 wandb_run.log(row, step=step)
+            if checkpointing_enabled:
+                assert checkpoint_dir is not None
+                if args.checkpoint_interval > 0 and (step + 1) % args.checkpoint_interval == 0:
+                    periodic_path = checkpoint_dir / f"step_{step + 1:08d}"
+                    save_training_checkpoint(
+                        periodic_path,
+                        model,
+                        optimizer,
+                        step=step,
+                        kind="periodic",
+                        metrics=row,
+                        resolved_config=resolved_config,
+                        rng_state=rng.bit_generator.state,
+                        dataset_rng_state=None if dataset is None else dataset.rng.bit_generator.state,
+                        eval_rng_state=eval_rng.bit_generator.state,
+                    )
+                    checkpoint_paths[f"step_{step + 1:08d}"] = periodic_path
+                    print(f"saved_checkpoint={periodic_path}", flush=True)
+                if (
+                    args.save_best_checkpoint
+                    and "eval_loss" in row
+                    and (best_eval_loss is None or row["eval_loss"] < best_eval_loss)
+                ):
+                    best_eval_loss = row["eval_loss"]
+                    best_path = checkpoint_dir / "best"
+                    save_training_checkpoint(
+                        best_path,
+                        model,
+                        optimizer,
+                        step=step,
+                        kind="best",
+                        metrics=row,
+                        resolved_config=resolved_config,
+                        rng_state=rng.bit_generator.state,
+                        dataset_rng_state=None if dataset is None else dataset.rng.bit_generator.state,
+                        eval_rng_state=eval_rng.bit_generator.state,
+                    )
+                    checkpoint_paths["best"] = best_path
+                    print(f"saved_best_checkpoint={best_path} eval_loss={best_eval_loss:.6f}", flush=True)
     finally:
         if log_fh is not None:
             log_fh.close()
@@ -793,6 +1074,34 @@ def main():
         memory_stats = {}
     peak_hbm_bytes = int(memory_stats.get("peak_bytes_in_use", 0) or 0)
     peak_reserved_bytes = int(memory_stats.get("peak_bytes_reserved", 0) or 0)
+    performance_summary = {
+        "compile_plus_first_step_sec": compile_time,
+        "avg_measured_step_sec": avg_step,
+        "tokens_per_sec": tokens_per_step / avg_step,
+        "est_tflops": achieved_flops / 1e12,
+        "mfu_percent": mfu * 100,
+        "jax_peak_hbm_gb": peak_hbm_bytes / 1e9,
+        "jax_peak_reserved_gb": peak_reserved_bytes / 1e9,
+    }
+    if checkpointing_enabled and args.save_final_checkpoint:
+        assert checkpoint_dir is not None
+        final_path = checkpoint_dir / "final"
+        final_metrics = dict(last_row or {})
+        final_metrics.update(performance_summary)
+        save_training_checkpoint(
+            final_path,
+            model,
+            optimizer,
+            step=int(final_metrics.get("step", args.max_steps - 1)),
+            kind="final",
+            metrics=final_metrics,
+            resolved_config=resolved_config,
+            rng_state=rng.bit_generator.state,
+            dataset_rng_state=None if dataset is None else dataset.rng.bit_generator.state,
+            eval_rng_state=eval_rng.bit_generator.state,
+        )
+        checkpoint_paths["final"] = final_path
+        print(f"saved_final_checkpoint={final_path}", flush=True)
     print(
         f"compile_plus_first_step={compile_time:.3f}s "
         f"avg_measured_step={avg_step:.4f}s "
@@ -806,17 +1115,22 @@ def main():
         flush=True,
     )
     if wandb_run is not None:
-        wandb_run.summary.update(
-            {
-                "compile_plus_first_step_sec": compile_time,
-                "avg_measured_step_sec": avg_step,
-                "tokens_per_sec": tokens_per_step / avg_step,
-                "est_tflops": achieved_flops / 1e12,
-                "mfu_percent": mfu * 100,
-                "jax_peak_hbm_gb": peak_hbm_bytes / 1e9,
-                "jax_peak_reserved_gb": peak_reserved_bytes / 1e9,
-            }
-        )
+        summary_update = dict(performance_summary)
+        summary_update.update({
+            f"{kind}_checkpoint_path": str(path)
+            for kind, path in checkpoint_paths.items()
+            if kind in ("best", "final")
+        })
+        wandb_run.summary.update(summary_update)
+        if checkpointing_enabled and args.wandb_checkpoints:
+            for kind in ("best", "final"):
+                path = checkpoint_paths.get(kind)
+                if path is not None and path.exists():
+                    upload_checkpoint_artifact(
+                        wandb_run,
+                        path,
+                        kind=kind,
+                    )
         wandb_run.finish()
 
 
