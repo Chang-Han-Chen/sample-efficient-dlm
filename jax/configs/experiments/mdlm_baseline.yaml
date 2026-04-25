@@ -1,6 +1,6 @@
-name: ar_old_bundle
-description: "AR old intervention bundle: QK-norm, value residual, layernorm scaling, and per-head attention gating."
-tags: [ar, old_bundle, qknorm, value_residual, layernorm_scaling, attention_gating, seq512, vocab8192]
+name: mdlm_baseline
+description: MDLM baseline on the shared JAX backbone with old architecture interventions off.
+tags: [mdlm, baseline, seq512, vocab8192]
 base_configs:
   data: jax/configs/data/climbmix_8192.yaml
   model: jax/configs/model/gpt_small_70m.yaml
@@ -9,14 +9,14 @@ base_configs:
 lr_sweep: greedy_global_lr_mult
 effective_batch_size: 512
 train_args:
-  objective: ar
+  objective: mdlm
   train_path: data/climbmix_smoke_8192/tokens/train
   eval_path: data/climbmix_smoke_8192/tokens/val
   seed: 42
-  run_name: ar_old_bundle
-  wandb_group: ar_matrix
-  wandb_tags: [ar, old_bundle, seq512, vocab8192]
-  output_dir: runs/ar_matrix/ar_old_bundle
+  run_name: mdlm_baseline
+  wandb_group: mdlm_matrix
+  wandb_tags: [mdlm, baseline, seq512, vocab8192]
+  output_dir: runs/mdlm_matrix/mdlm_baseline
   max_steps: 5100
   warmup_steps: 100
   batch_size: 512
@@ -25,6 +25,12 @@ train_args:
   num_devices: 2
   context_length: 512
   vocab_size: 8192
+  mask_token_id: 8192
+  diffusion_steps: 100
+  t_min: 0.45
+  t_max: 0.95
+  noise_schedule: linear
+  eval_t_frac: 0.6
   d_model: 768
   d_ff: 2048
   n_layers: 8
@@ -35,17 +41,17 @@ train_args:
   attention_impl: cudnn
   disable_qkv_fusion: false
   disable_swiglu_fusion: false
-  attn_qknorm: true
-  attn_val_residual: true
-  attn_gating: per-head
-  layernorm_scaling: true
+  attn_qknorm: false
+  attn_val_residual: false
+  attn_gating: false
+  layernorm_scaling: false
   value_embedding: false
   value_embedding_scale: 0.0
   weight_tying: true
   grad_checkpoint_layers: 0
-  table_adam_lr: 0.007
-  scalar_adam_lr: 0.007
-  muon_lr: 0.015
+  table_adam_lr: 0.01
+  scalar_adam_lr: 0.005
+  muon_lr: 0.04
   lr_mult: 1.0
   adam_wd: 0.0
   muon_wd: 0.0001
@@ -62,9 +68,9 @@ train_args:
   logit_chunk_size: 1024
   log_every: 50
   eval_batches: 4
-  measure_start_step: 5
+  measure_start_step: 105
   peak_flops: 312000000000000.0
   compilation_cache_dir: /tmp/sample_efficient_gpt_jax_cache
   disable_compilation_cache: false
   explain_cache_misses: false
-  log_jsonl: runs/ar_matrix/ar_old_bundle/lr1p0/train.jsonl
+  log_jsonl: runs/mdlm_matrix/mdlm_baseline/train.jsonl

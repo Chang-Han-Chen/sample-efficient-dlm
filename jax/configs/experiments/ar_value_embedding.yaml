@@ -19,8 +19,10 @@ train_args:
   output_dir: runs/ar_matrix/ar_value_embedding
   max_steps: 5100
   warmup_steps: 100
-  batch_size: 256
-  grad_accum_steps: 2
+  batch_size: 512
+  grad_accum_steps: 1
+  data_parallel: true
+  num_devices: 2
   context_length: 512
   vocab_size: 8192
   d_model: 768
@@ -41,15 +43,15 @@ train_args:
   value_embedding_scale: 1.0
   weight_tying: true
   grad_checkpoint_layers: 0
-  table_adam_lr: 0.6
-  scalar_adam_lr: 0.005
-  muon_lr: 0.04
+  table_adam_lr: 0.007
+  scalar_adam_lr: 0.007
+  muon_lr: 0.015
   lr_mult: 1.0
   adam_wd: 0.0
-  muon_wd: 0.2
-  adam_beta1: 0.8
-  adam_beta2: 0.95
-  adam_eps: 1.0e-10
+  muon_wd: 0.0001
+  adam_beta1: 0.95
+  adam_beta2: 0.99
+  adam_eps: 1.0e-8
   muon_beta2: 0.95
   muon_momentum: 0.95
   momentum_warmup_steps: 300

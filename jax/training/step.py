@@ -12,6 +12,8 @@ from .loss import ar_loss, cross_entropy_with_z_loss, supervised_lm_loss
 from .optimizer import clip_by_global_norm
 
 Array = jax.Array
+DATA_AXIS = "data"
+BROADCAST_GRAPH_AXES = nnx.StateAxes({...: None})
 
 
 def loss_fn(
@@ -88,6 +90,40 @@ def train_step(
     return metrics
 
 
+@functools.partial(
+    nnx.pmap,
+    axis_name=DATA_AXIS,
+    in_axes=(BROADCAST_GRAPH_AXES, BROADCAST_GRAPH_AXES, 0, 0, None, None, None, None),
+    static_broadcasted_argnums=(6, 7),
+)
+def train_step_data_parallel(
+    model,
+    optimizer,
+    inputs: Array,
+    targets: Array,
+    z_loss_weight: float,
+    max_grad_norm: float,
+    loss_impl: str = "full",
+    logit_chunk_size: int = 1024,
+):
+    """Single optimizer step over a pmapped, data-parallel microbatch."""
+    (total_loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
+        model,
+        inputs,
+        targets,
+        z_loss_weight,
+        loss_impl,
+        logit_chunk_size,
+    )
+    mean_grads = jax.lax.pmean(grads, DATA_AXIS)
+    clipped_grads, grad_norm = clip_by_global_norm(mean_grads, max_grad_norm)
+    optimizer.update(model, clipped_grads)
+    metrics = jax.tree_util.tree_map(lambda x: jax.lax.pmean(x, DATA_AXIS), metrics)
+    metrics["total_loss"] = jax.lax.pmean(total_loss, DATA_AXIS)
+    metrics["grad_norm"] = grad_norm
+    return metrics
+
+
 @functools.partial(nnx.jit, static_argnums=(6, 7))
 def train_step_accumulated(
     model,
@@ -138,6 +174,62 @@ def train_step_accumulated(
     return metrics
 
 
+@functools.partial(
+    nnx.pmap,
+    axis_name=DATA_AXIS,
+    in_axes=(BROADCAST_GRAPH_AXES, BROADCAST_GRAPH_AXES, 0, 0, None, None, None, None),
+    static_broadcasted_argnums=(6, 7),
+)
+def train_step_accumulated_data_parallel(
+    model,
+    optimizer,
+    inputs: Array,
+    targets: Array,
+    z_loss_weight: float,
+    max_grad_norm: float,
+    loss_impl: str = "full",
+    logit_chunk_size: int = 1024,
+):
+    """Data-parallel step with local gradient accumulation on each device."""
+    accum_steps = inputs.shape[0]
+    (total_loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
+        model,
+        inputs[0],
+        targets[0],
+        z_loss_weight,
+        loss_impl,
+        logit_chunk_size,
+    )
+    summed_grads = grads
+    metric_sums = metrics
+
+    for i in range(1, accum_steps):
+        (loss_i, metrics_i), grads_i = nnx.value_and_grad(loss_fn, has_aux=True)(
+            model,
+            inputs[i],
+            targets[i],
+            z_loss_weight,
+            loss_impl,
+            logit_chunk_size,
+        )
+        total_loss = total_loss + loss_i
+        summed_grads = jax.tree_util.tree_map(lambda a, b: a + b, summed_grads, grads_i)
+        metric_sums = {k: metric_sums[k] + metrics_i[k] for k in metric_sums}
+
+    inv = 1.0 / float(accum_steps)
+    local_mean_grads = jax.tree_util.tree_map(lambda g: g * inv, summed_grads)
+    mean_grads = jax.lax.pmean(local_mean_grads, DATA_AXIS)
+    clipped_grads, grad_norm = clip_by_global_norm(mean_grads, max_grad_norm)
+    optimizer.update(model, clipped_grads)
+    metrics = {
+        k: jax.lax.pmean(v * inv, DATA_AXIS)
+        for k, v in metric_sums.items()
+    }
+    metrics["total_loss"] = jax.lax.pmean(total_loss * inv, DATA_AXIS)
+    metrics["grad_norm"] = grad_norm
+    return metrics
+
+
 @functools.partial(nnx.jit, static_argnums=(9, 10, 11, 12, 13))
 def train_step_supervised(
     model,
@@ -172,6 +264,51 @@ def train_step_supervised(
     clipped_grads, grad_norm = clip_by_global_norm(grads, max_grad_norm)
     optimizer.update(model, clipped_grads)
     metrics["total_loss"] = total_loss
+    metrics["grad_norm"] = grad_norm
+    return metrics
+
+
+@functools.partial(
+    nnx.pmap,
+    axis_name=DATA_AXIS,
+    in_axes=(BROADCAST_GRAPH_AXES, BROADCAST_GRAPH_AXES, 0, 0, 0, None, None, None, None, None, None, None, None, None),
+    static_broadcasted_argnums=(9, 10, 11, 12, 13),
+)
+def train_step_supervised_data_parallel(
+    model,
+    optimizer,
+    inputs: Array,
+    targets: Array,
+    supervise_mask: Array,
+    token_positions: Array | None,
+    attention_mask: Array | None,
+    z_loss_weight: float,
+    max_grad_norm: float,
+    is_causal: bool | None,
+    output_length: int | None,
+    loss_impl: str = "full",
+    logit_chunk_size: int = 1024,
+    bd3_block_len: int | None = None,
+):
+    (total_loss, metrics), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
+        model,
+        inputs,
+        targets,
+        supervise_mask,
+        token_positions,
+        attention_mask,
+        z_loss_weight,
+        is_causal,
+        output_length,
+        bd3_block_len,
+        loss_impl,
+        logit_chunk_size,
+    )
+    mean_grads = jax.lax.pmean(grads, DATA_AXIS)
+    clipped_grads, grad_norm = clip_by_global_norm(mean_grads, max_grad_norm)
+    optimizer.update(model, clipped_grads)
+    metrics = jax.tree_util.tree_map(lambda x: jax.lax.pmean(x, DATA_AXIS), metrics)
+    metrics["total_loss"] = jax.lax.pmean(total_loss, DATA_AXIS)
     metrics["grad_norm"] = grad_norm
     return metrics
 
@@ -240,6 +377,80 @@ def train_step_supervised_accumulated(
     optimizer.update(model, clipped_grads)
     metrics = {k: v * inv for k, v in metric_sums.items()}
     metrics["total_loss"] = total_loss * inv
+    metrics["grad_norm"] = grad_norm
+    return metrics
+
+
+@functools.partial(
+    nnx.pmap,
+    axis_name=DATA_AXIS,
+    in_axes=(BROADCAST_GRAPH_AXES, BROADCAST_GRAPH_AXES, 0, 0, 0, None, None, None, None, None, None, None, None, None),
+    static_broadcasted_argnums=(9, 10, 11, 12, 13),
+)
+def train_step_supervised_accumulated_data_parallel(
+    model,
+    optimizer,
+    inputs: Array,
+    targets: Array,
+    supervise_mask: Array,
+    token_positions: Array | None,
+    attention_mask: Array | None,
+    z_loss_weight: float,
+    max_grad_norm: float,
+    is_causal: bool | None,
+    output_length: int | None,
+    loss_impl: str = "full",
+    logit_chunk_size: int = 1024,
+    bd3_block_len: int | None = None,
+):
+    """Data-parallel supervised step with local gradient accumulation."""
+    accum_steps = inputs.shape[0]
+    (total_loss, metrics), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
+        model,
+        inputs[0],
+        targets[0],
+        supervise_mask[0],
+        token_positions,
+        attention_mask,
+        z_loss_weight,
+        is_causal,
+        output_length,
+        bd3_block_len,
+        loss_impl,
+        logit_chunk_size,
+    )
+    summed_grads = grads
+    metric_sums = metrics
+
+    for i in range(1, accum_steps):
+        (loss_i, metrics_i), grads_i = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
+            model,
+            inputs[i],
+            targets[i],
+            supervise_mask[i],
+            token_positions,
+            attention_mask,
+            z_loss_weight,
+            is_causal,
+            output_length,
+            bd3_block_len,
+            loss_impl,
+            logit_chunk_size,
+        )
+        total_loss = total_loss + loss_i
+        summed_grads = jax.tree_util.tree_map(lambda a, b: a + b, summed_grads, grads_i)
+        metric_sums = {k: metric_sums[k] + metrics_i[k] for k in metric_sums}
+
+    inv = 1.0 / float(accum_steps)
+    local_mean_grads = jax.tree_util.tree_map(lambda g: g * inv, summed_grads)
+    mean_grads = jax.lax.pmean(local_mean_grads, DATA_AXIS)
+    clipped_grads, grad_norm = clip_by_global_norm(mean_grads, max_grad_norm)
+    optimizer.update(model, clipped_grads)
+    metrics = {
+        k: jax.lax.pmean(v * inv, DATA_AXIS)
+        for k, v in metric_sums.items()
+    }
+    metrics["total_loss"] = jax.lax.pmean(total_loss * inv, DATA_AXIS)
     metrics["grad_norm"] = grad_norm
     return metrics
 

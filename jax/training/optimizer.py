@@ -1,7 +1,8 @@
 """NorMuon+AdamW optimizer for Flax NNX models.
 
 The grouping follows the role-based pattern in ``karpathy/train.py`` while
-keeping only three LR families for the tied-embedding JAX model:
+keeping only three LR families for the tied-embedding JAX model. The default
+constants stay anchored to the ``pytorch/`` small-GPT optimizer recipe:
 
 * AdamW table params: token embedding / tied lm head, and value embeddings.
 * AdamW scalar/vector params: norms, QK gain, value-residual scalars.
@@ -23,15 +24,15 @@ Array = jax.Array
 
 @dataclass(frozen=True)
 class NormuonAdamWConfig:
-    table_adam_lr: float = 0.6
-    scalar_adam_lr: float = 5e-3
-    muon_lr: float = 4e-2
+    table_adam_lr: float = 7e-3
+    scalar_adam_lr: float = 7e-3
+    muon_lr: float = 1.5e-2
     adam_weight_decay: float = 0.0
-    muon_weight_decay: float = 0.2
-    adam_betas: tuple[float, float] = (0.8, 0.95)
+    muon_weight_decay: float = 1e-4
+    adam_betas: tuple[float, float] = (0.95, 0.99)
     muon_momentum: float = 0.95
     muon_beta2: float = 0.95
-    adam_eps: float = 1e-10
+    adam_eps: float = 1e-8
     warmup_steps: int = 100
     momentum_warmup_steps: int = 300
     momentum_warmup_start: float = 0.85

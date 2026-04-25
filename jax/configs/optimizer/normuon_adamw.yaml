@@ -1,12 +1,12 @@
 name: normuon_adamw
 optimizer: NorMuonCWD+AdamW
-table_adam_lr: 0.6
-scalar_adam_lr: 0.005
-muon_lr: 0.04
+table_adam_lr: 0.007
+scalar_adam_lr: 0.007
+muon_lr: 0.015
 adam_wd: 0.0
-muon_wd: 0.2
-adam_betas: [0.8, 0.95]
-adam_eps: 1.0e-10
+muon_wd: 0.0001
+adam_betas: [0.95, 0.99]
+adam_eps: 1.0e-8
 muon_beta2: 0.95
 muon_momentum: 0.95
 momentum_warmup_steps: 300

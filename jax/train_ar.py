@@ -36,8 +36,12 @@ from training.step import (
     eval_step_supervised,
     train_step,
     train_step_accumulated,
+    train_step_accumulated_data_parallel,
+    train_step_data_parallel,
     train_step_supervised,
     train_step_supervised_accumulated,
+    train_step_supervised_accumulated_data_parallel,
+    train_step_supervised_data_parallel,
 )
 
 
@@ -64,6 +68,8 @@ def parse_args():
     p.add_argument("--warmup-steps", type=int, default=100)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--grad-accum-steps", type=int, default=1)
+    p.add_argument("--data-parallel", action="store_true")
+    p.add_argument("--num-devices", type=int, default=None)
     p.add_argument("--context-length", type=int, default=256)
     p.add_argument("--vocab-size", type=int, default=8192)
     p.add_argument("--mask-token-id", type=int, default=None)
@@ -95,15 +101,15 @@ def parse_args():
     p.set_defaults(weight_tying=True)
     p.add_argument("--grad-checkpoint-layers", type=int, default=0)
     p.add_argument("--adam-lr", type=float, default=None, help=argparse.SUPPRESS)
-    p.add_argument("--table-adam-lr", type=float, default=0.6)
-    p.add_argument("--scalar-adam-lr", type=float, default=5e-3)
-    p.add_argument("--muon-lr", type=float, default=4e-2)
+    p.add_argument("--table-adam-lr", type=float, default=7e-3)
+    p.add_argument("--scalar-adam-lr", type=float, default=7e-3)
+    p.add_argument("--muon-lr", type=float, default=1.5e-2)
     p.add_argument("--lr-mult", type=float, default=1.0)
     p.add_argument("--adam-wd", type=float, default=0.0)
-    p.add_argument("--muon-wd", type=float, default=0.2)
-    p.add_argument("--adam-beta1", type=float, default=0.8)
-    p.add_argument("--adam-beta2", type=float, default=0.95)
-    p.add_argument("--adam-eps", type=float, default=1e-10)
+    p.add_argument("--muon-wd", type=float, default=1e-4)
+    p.add_argument("--adam-beta1", type=float, default=0.95)
+    p.add_argument("--adam-beta2", type=float, default=0.99)
+    p.add_argument("--adam-eps", type=float, default=1e-8)
     p.add_argument("--muon-beta2", type=float, default=0.95)
     p.add_argument("--muon-momentum", type=float, default=0.95)
     p.add_argument("--momentum-warmup-steps", type=int, default=300)
@@ -157,6 +163,33 @@ def synthetic_batch(rng: np.random.Generator, batch_size: int, context_length: i
 def to_device_batch(batch: tuple[np.ndarray, np.ndarray]) -> tuple[jax.Array, jax.Array]:
     inputs_np, targets_np = batch
     return jnp.asarray(inputs_np, dtype=jnp.int32), jnp.asarray(targets_np, dtype=jnp.int32)
+
+
+def shard_batch_for_devices(array: np.ndarray, num_devices: int) -> np.ndarray:
+    if array.shape[0] % num_devices != 0:
+        raise ValueError(
+            f"global batch size {array.shape[0]} must be divisible by num_devices={num_devices}"
+        )
+    per_device = array.shape[0] // num_devices
+    return array.reshape((num_devices, per_device, *array.shape[1:]))
+
+
+def shard_accumulated_for_devices(array: np.ndarray, num_devices: int) -> np.ndarray:
+    if array.shape[1] % num_devices != 0:
+        raise ValueError(
+            f"global batch size {array.shape[1]} must be divisible by num_devices={num_devices}"
+        )
+    accum_steps, global_batch = array.shape[:2]
+    per_device = global_batch // num_devices
+    sharded = array.reshape((accum_steps, num_devices, per_device, *array.shape[2:]))
+    return np.swapaxes(sharded, 0, 1)
+
+
+def scalarize_metrics(metrics: dict[str, jax.Array]) -> dict[str, jax.Array]:
+    return {
+        key: jnp.mean(value) if getattr(value, "shape", ()) != () else value
+        for key, value in metrics.items()
+    }
 
 
 def mean_eval_loss(
@@ -256,6 +289,22 @@ def main():
             jax.config.update("jax_explain_cache_misses", True)
     if not args.synthetic and args.train_path is None:
         raise ValueError("Provide --train-path or pass --synthetic for a smoke run")
+    local_devices = jax.local_devices()
+    if args.data_parallel:
+        num_devices = args.num_devices if args.num_devices is not None else len(local_devices)
+        if num_devices < 1:
+            raise ValueError("--num-devices must be at least 1")
+        if num_devices > len(local_devices):
+            raise ValueError(
+                f"requested {num_devices} data-parallel devices, but JAX sees {len(local_devices)}"
+            )
+        if args.batch_size % num_devices != 0:
+            raise ValueError(
+                f"--batch-size {args.batch_size} must be divisible by --num-devices {num_devices}"
+            )
+    else:
+        num_devices = 1
+    per_device_batch_size = args.batch_size // num_devices
 
     dtype = jnp.bfloat16 if args.dtype == "bfloat16" else jnp.float32
     if args.objective == "ar":
@@ -370,7 +419,10 @@ def main():
         "wandb_tags": args.wandb_tags,
         "steps": args.max_steps,
         "batch_size": args.batch_size,
+        "per_device_batch_size": per_device_batch_size,
         "grad_accum_steps": args.grad_accum_steps,
+        "data_parallel": args.data_parallel,
+        "data_parallel_devices": num_devices,
         "context_length": args.context_length,
         "model_sequence_length": model_sequence_length,
         "tokens_per_optimizer_step": args.batch_size * args.context_length * args.grad_accum_steps,
@@ -424,6 +476,7 @@ def main():
         "measure_start_step": args.measure_start_step,
         "compilation_cache_dir": None if args.disable_compilation_cache else str(args.compilation_cache_dir),
         "devices": [str(d) for d in jax.devices()],
+        "local_devices": [str(d) for d in local_devices[:num_devices]],
     }
     if args.output_dir is not None:
         args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -529,10 +582,18 @@ def main():
 
             if args.objective == "ar":
                 if args.grad_accum_steps == 1:
-                    inputs, targets = to_device_batch(batches[0])
+                    inputs_np, targets_np = batches[0]
+                    if args.data_parallel:
+                        inputs_np = shard_batch_for_devices(inputs_np, num_devices)
+                        targets_np = shard_batch_for_devices(targets_np, num_devices)
+                    inputs = jnp.asarray(inputs_np, dtype=jnp.int32)
+                    targets = jnp.asarray(targets_np, dtype=jnp.int32)
                 else:
                     inputs_np = np.stack([b[0] for b in batches], axis=0)
                     targets_np = np.stack([b[1] for b in batches], axis=0)
+                    if args.data_parallel:
+                        inputs_np = shard_accumulated_for_devices(inputs_np, num_devices)
+                        targets_np = shard_accumulated_for_devices(targets_np, num_devices)
                     inputs = jnp.asarray(inputs_np, dtype=jnp.int32)
                     targets = jnp.asarray(targets_np, dtype=jnp.int32)
                 supervise_mask = None
@@ -550,10 +611,18 @@ def main():
                 ]
                 if args.grad_accum_steps == 1:
                     inputs_np, targets_np, supervise_np = prepared[0]
+                    if args.data_parallel:
+                        inputs_np = shard_batch_for_devices(inputs_np, num_devices)
+                        targets_np = shard_batch_for_devices(targets_np, num_devices)
+                        supervise_np = shard_batch_for_devices(supervise_np, num_devices)
                 else:
                     inputs_np = np.stack([p[0] for p in prepared], axis=0)
                     targets_np = np.stack([p[1] for p in prepared], axis=0)
                     supervise_np = np.stack([p[2] for p in prepared], axis=0)
+                    if args.data_parallel:
+                        inputs_np = shard_accumulated_for_devices(inputs_np, num_devices)
+                        targets_np = shard_accumulated_for_devices(targets_np, num_devices)
+                        supervise_np = shard_accumulated_for_devices(supervise_np, num_devices)
                 inputs = jnp.asarray(inputs_np, dtype=jnp.int32)
                 targets = jnp.asarray(targets_np, dtype=jnp.int32)
                 supervise_mask = jnp.asarray(supervise_np, dtype=bool)
@@ -562,7 +631,8 @@ def main():
             start = time.perf_counter()
             if args.objective == "ar":
                 if args.grad_accum_steps == 1:
-                    metrics = train_step(
+                    step_fn = train_step_data_parallel if args.data_parallel else train_step
+                    metrics = step_fn(
                         model,
                         optimizer,
                         inputs,
@@ -573,7 +643,12 @@ def main():
                         args.logit_chunk_size,
                     )
                 else:
-                    metrics = train_step_accumulated(
+                    step_fn = (
+                        train_step_accumulated_data_parallel
+                        if args.data_parallel
+                        else train_step_accumulated
+                    )
+                    metrics = step_fn(
                         model,
                         optimizer,
                         inputs,
@@ -585,7 +660,12 @@ def main():
                     )
             else:
                 if args.grad_accum_steps == 1:
-                    metrics = train_step_supervised(
+                    step_fn = (
+                        train_step_supervised_data_parallel
+                        if args.data_parallel
+                        else train_step_supervised
+                    )
+                    metrics = step_fn(
                         model,
                         optimizer,
                         inputs,
@@ -602,7 +682,12 @@ def main():
                         model_context.bd3_block_len,
                     )
                 else:
-                    metrics = train_step_supervised_accumulated(
+                    step_fn = (
+                        train_step_supervised_accumulated_data_parallel
+                        if args.data_parallel
+                        else train_step_supervised_accumulated
+                    )
+                    metrics = step_fn(
                         model,
                         optimizer,
                         inputs,
@@ -618,6 +703,8 @@ def main():
                         args.logit_chunk_size,
                         model_context.bd3_block_len,
                     )
+            if args.data_parallel:
+                metrics = scalarize_metrics(metrics)
             loss_value = float(jax.block_until_ready(metrics["loss"]))
             elapsed = time.perf_counter() - start
             if first_metrics is None:

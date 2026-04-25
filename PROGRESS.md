@@ -847,76 +847,119 @@ Validation:
 Checked only `karpathy/train.py` as the reference for Karpathy-style value
 embeddings, initialization, and optimizer scaling.
 
-Conclusion: the current JAX configs are not doing the same thing. They follow
-the older `gpt_small_faster`-style optimizer recipe (`adam_lr=0.007`,
-`muon_lr=0.015`, `adam_betas=(0.95, 0.99)`, `muon_wd=1e-4`) more closely than
-Karpathy's `train.py`.
+Conclusion: keep the implementation anchored to the `pytorch/` optimizer
+constants unless an ablation explicitly says otherwise. Karpathy's `train.py`
+has useful LR grouping ideas, but its initialization and untied head recipe do
+not transfer directly to our tied-embedding JAX baseline.
 
-Karpathy `train.py` initialization:
+Current JAX LR families:
 
-- Token embedding: normal std `1.0`.
-- LM head: normal std `0.001`.
-- Q/K/V and MLP up: uniform with std `1/sqrt(d_model)`.
-- Attention output projection and MLP down projection: zeros.
-- Value embeddings: uniform with std `1/sqrt(d_model)`.
-- Value-embedding gate: zeros.
+- table Adam: token embedding / tied LM head and value-embedding tables
+- scalar Adam: RMSNorm gains, QK gains, value-residual scalars, and other
+  vector/scalar params
+- Muon: the remaining matrix weights, with the PyTorch-style shape LR multiplier
 
-Current JAX `init_mode=mup`:
+Current non-LR defaults: Adam betas `(0.95, 0.99)`, Adam eps `1e-8`, Muon
+cautious WD `1e-4`, momentum warmup `0.85 -> 0.95`.
 
-- Token embedding: truncated normal std `1/sqrt(d_model)`.
-- LM head: same as embedding when tied; otherwise truncated normal
-  `1/sqrt(d_model)`.
-- All linear layers: truncated normal std `1/sqrt(fan_in)`.
-- Output/down projections are not zero-initialized.
-- Value embeddings and gate zero-init match Karpathy's intended scale/gate
-  behavior, except the exact distribution only matches for the value embedding
-  table.
+## Baseline AR LR Sweep Notes
 
-Karpathy `train.py` optimizer scaling:
+Setup: baseline AR, tied embeddings, old interventions off, vocab8192, seq512,
+effective batch 512, cuDNN attention, full logits, W&B group
+`ar_lr_sweep_baseline*`. Current probes are 300 steps: 100 warmup + 200
+constant.
 
-- AdamW groups are split: unembedding lr `0.004`, embedding/value-embedding lr
-  `0.6`, residual scalar lr `0.005`, `x0` scalar lr `0.5`.
-- AdamW betas are `(0.8, 0.95)` for most Adam groups, `(0.96, 0.95)` for
-  `x0_lambdas`, eps `1e-10`, no AdamW weight decay.
-- AdamW embedding/unembedding/value-embedding lrs are multiplied by
-  `(d_model / 768)^-0.5`.
-- Muon lr is `0.04`; effective Muon lr also has
-  `sqrt(max(1, out_dim / in_dim))`.
-- Muon momentum warms from `0.85` to `0.95` over 300 steps.
-- Muon cautious weight decay starts at `0.2` and decays with wall-clock
-  progress in the time-budget schedule.
+Corrected PyTorch-default 300-step probes:
 
-Current JAX optimizer:
+| table | scalar | muon | result |
+| --- | --- | --- | --- |
+| `0.01` | `0.005` | `0.04` | best so far: loss `3.504`, grad `0.250`, z `98`, `0.817s/step`, MFU `46.6%` |
+| `0.00333` | `0.005` | `0.04` | tied on CE but worse z: loss `3.505`, grad `0.176`, z `~136`, `0.807s/step`, MFU `47.1%` |
+| `0.03` | `0.005` | `0.04` | not top-2: loss `3.536`, grad `0.407`, z `~87`, `0.815s/step`, MFU `46.7%` |
+| `0.01` | `0.0005` | `0.04` | close but slightly worse: loss `3.513`, grad `0.309` |
+| `0.01` | `0.005` | `0.004` | rejected; step-100 loss `5.536`, too slow |
+| `0.01` | `0.005` | `0.1` | fast early, then flattened/drifted: final loss `3.874`, grad `0.285` |
+| `0.01` | `0.005` | `0.4` | rejected; grad spikes above `30` |
 
-- Uses one AdamW lr for embeddings, tied lm head, scalar/vector params, and
-  other non-matrix params.
-- Does not currently have separate embedding/value-embedding/unembedding/scalar
-  AdamW lrs or the Karpathy `(d_model / 768)^-0.5` Adam scaling.
-- Does apply the Muon `sqrt(max(1, out_dim / in_dim))` multiplier, momentum
-  warmup `0.85 -> 0.95`, and cautious weight decay.
-- Uses the PLAN schedule: 100-step warmup and constant peak lr through 5100
-  optimizer steps, so it intentionally differs from Karpathy's wall-clock
-  stable/warmdown schedule.
+Older probes before the PyTorch-default correction are qualitative only. They
+showed that very high tied-table LR is dangerous: `table=0.03-0.04` was already
+unstable under the old constants, and `table=0.6` blew up immediately.
 
-Important implication: exact Karpathy init is incompatible with the current
-decision to tie token embeddings and LM head. Karpathy relies on separate token
-embedding std `1.0` and LM-head std `0.001`; tied weights cannot satisfy both.
-If tying stays enabled, the clean path is to add Karpathy-style optimizer group
-lrs and optionally a config-controlled zero-output-projection init, but not copy
-the embedding/head initialization literally.
+Current interpretation: `table=0.01`, `scalar=0.005`, `muon=0.04` remains the
+best completed baseline bracket. `muon=0.1` is not mainly a weight-decay issue:
+with `muon_wd=1e-4`, the direct decay term is only `lr * wd = 1e-5` per step
+before masking. The likely issue is simply that the normalized Muon matrix
+update is too large after the loss has entered the low-gradient regime.
 
-LR tuning implication from the Karpathy pattern:
+If we return to longer AR baseline probes, use these two candidates:
 
-- The pattern is by parameter role, not by transformer layer.
-- For the tied JAX model, the minimal useful LR families are:
-  matrix Muon lr, table Adam lr, and scalar/vector Adam lr.
-- "Table" means token embedding / tied LM-head weight and token value-embedding
-  tables. If embeddings are untied later, unembedding should become a separate
-  fourth LR family because Karpathy uses a much smaller unembedding LR.
-- "Scalar/vector" includes RMSNorm gammas, QK gain, and the JAX value-residual
-  `alpha1`, `alpha2`, and `scale` parameters. These are our closest analogue to
-  Karpathy's learned residual/gain scalar groups, even though Karpathy's
-  `resid_lambdas`/`x0_lambdas` are not the same mechanism as value residual.
-- Do not run a full grid over all families for the first AR matrix. Set
-  Karpathy-inspired base ratios, then sweep one global `lr_mult`; only add a
-  small Muon-vs-Adam/table ratio spot check if the global sweep is ambiguous.
+- Candidate A: `table=0.01`, `scalar=0.005`, `muon=0.04`.
+- Candidate B: `table=0.00333`, `scalar=0.005`, `muon=0.04`.
+
+Do not spend more short-run time on the baseline AR LR bracket unless a 2K run
+shows a contradiction.
+
+## Multi-GPU Data Parallel Bring-Up
+
+Added an opt-in pmap data-parallel path to the trainer:
+
+- CLI flags: `--data-parallel` and `--num-devices`.
+- `--batch-size` is the global microbatch size per accumulation step.
+- The trainer reshapes batches to `[num_devices, per_device_batch, ...]`.
+- Gradients are averaged across devices with `lax.pmean` before clipping and
+  the NorMuon+AdamW update.
+- Metrics are averaged across devices before logging.
+- Existing single-device JIT path is unchanged unless `--data-parallel` is set.
+
+The expected default experiment hardware is now 2 A100s. For the target
+fixed-effective-batch regime, launch with:
+
+```text
+--data-parallel --num-devices 2 --batch-size 512 --grad-accum-steps 1
+```
+
+This means 256 examples/GPU, no gradient accumulation, and the same effective
+batch of 512 sequences. It should be faster than the current single-GPU
+`batch_size=256, grad_accum=2` path because it replaces the second microstep
+with one gradient all-reduce. If 4 GPUs are available later, use
+`--num-devices 4 --batch-size 512 --grad-accum-steps 1` for 128 examples/GPU.
+
+Validation so far:
+
+- `python -m py_compile jax/train_ar.py jax/training/step.py` passed.
+- CPU pmap smoke passed for AR with `--grad-accum-steps 1`.
+- CPU pmap smoke passed for AR with `--grad-accum-steps 2`.
+- CPU pmap smoke passed for MDLM with `--grad-accum-steps 1`.
+- Simulated 4-device CPU pmap passed for AR with `--num-devices 4`.
+- Simulated 4-device CPU pmap passed for MDLM with `--num-devices 4`.
+- Simulated 4-device CPU pmap passed for BD3LM blocked attention with
+  `--num-devices 4`.
+- Real-GPU pmap smoke passed on the current 1-A100 VM with
+  `--data-parallel --num-devices 1`.
+- Existing `jax/tests/test_training_stack.py` and
+  `jax/tests/test_diffusion_stack.py` still pass on CPU after the pmap changes.
+
+Still needed when the VM exposes multiple GPUs:
+
+- Confirm `jax.local_device_count()` sees 2 GPUs.
+- Smoke AR on real GPUs with tiny synthetic data and `--num-devices 2`.
+- Compare AR fixed effective batch 512:
+  single GPU `batch_size=256, grad_accum=2` versus 2-GPU
+  `batch_size=512, grad_accum=1`.
+- Repeat the same fixed-effective comparison for MDLM.
+
+Experiment configs now default to the 2-GPU shape: `data_parallel=true`,
+`num_devices=2`, `batch_size=512`, and `grad_accum_steps=1`.
+
+## MDLM Baseline Notes
+
+The first MDLM baseline probe is valid and should be considered:
+
+| setting | result |
+| --- | --- |
+| `table=0.01`, `scalar=0.005`, `muon=0.04`; single A100; `batch_size=256`, `grad_accum=2`; 300 steps | final train loss `5.103`, last fixed-t eval loss `4.811`, grad `0.394`, z `97.8`, avg measured step `1.987s`, clean tok/s `132k`, MFU `19.2%`, peak HBM `61.14 GB` |
+
+This was not a planned MDLM sweep run because it launched before the 2-GPU
+default was decided, but it is still a useful baseline LR datapoint. Compare
+future 2-GPU runs on loss/eval metrics directly; compare wall time separately
+because the hardware and accumulation shape differ.
