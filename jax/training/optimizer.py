@@ -31,7 +31,7 @@ class NormuonAdamWConfig:
     adam_weight_decay: float = 0.0
     muon_weight_decay: float = 1e-4
     adam_betas: tuple[float, float] = (0.95, 0.99)
-    value_embedding_adam_betas: tuple[float, float] = (0.8, 0.95)
+    value_embedding_adam_betas: tuple[float, float] = (0.95, 0.99)
     muon_momentum: float = 0.95
     muon_beta2: float = 0.95
     adam_eps: float = 1e-8
