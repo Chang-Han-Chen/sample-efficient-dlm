@@ -18,7 +18,7 @@ from contextlib import contextmanager
 # The tests live in <repo>/jax/tests/. Climb up two levels to reach <repo>.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(_HERE, os.pardir, os.pardir))
-PT_REPO = REPO_ROOT                           # <repo> itself is already the PT package root
+PT_REPO = os.path.join(REPO_ROOT, "pytorch")  # <repo>/pytorch/ holds the PT package root
 JAX_DIR = os.path.join(REPO_ROOT, "jax")      # <repo>/jax/ holds the JAX transformer tree
 
 

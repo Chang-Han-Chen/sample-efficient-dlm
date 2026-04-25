@@ -84,6 +84,47 @@ class Embedding(nnx.Module):
         return self.weight.value[token_ids]
 
 
+class ValueEmbedding(nnx.Module):
+    """Token value embeddings used by the Karpathy-style VE ablation.
+
+    The table is stored as ``(vocab, n_kv_heads, head_dim)`` so attention can
+    add it directly to the unexpanded K/V-head value stream. Default init uses
+    a uniform distribution with std ``1 / sqrt(d_model)``, matching the
+    Karpathy recipe's variance while leaving the exact scale configurable.
+    """
+
+    def __init__(
+        self,
+        rngs: nnx.Rngs,
+        vocab_size: int,
+        n_kv_heads: int,
+        head_dim: int,
+        d_model: int,
+        dtype: jnp.dtype = jnp.float32,
+        init_std: float | None = None,
+    ):
+        std = float(init_std if init_std is not None else d_model**-0.5)
+        limit = (3.0 ** 0.5) * std
+        self.weight = nnx.Param(
+            jax.random.uniform(
+                rngs.params(),
+                (vocab_size, n_kv_heads, head_dim),
+                minval=-limit,
+                maxval=limit,
+                dtype=dtype,
+            )
+        )
+        self.vocab_size = vocab_size
+        self.n_kv_heads = n_kv_heads
+        self.head_dim = head_dim
+        self.d_model = d_model
+        self.dtype = dtype
+        self.init_std = std
+
+    def __call__(self, token_ids: Int[Array, "b seq"]) -> Float[Array, "b seq h d"]:
+        return self.weight.value[token_ids]
+
+
 class RMSNorm(nnx.Module):
     """RMSNorm with optional "layernorm scaling" (rsqrt(position)) scalar."""
 
@@ -117,8 +158,8 @@ class RMSNorm(nnx.Module):
 class SwiGLU(nnx.Module):
     """SwiGLU FFN: down( silu(up(x)) * gate(x) ).
 
-    PyTorch uses a single fused (d_model -> 2*d_ff) projection that's chunked;
-    semantically identical, two projections is just easier to weight-copy.
+    Match the PyTorch reference's fused input projection:
+    ``d_model -> 2*d_ff``, split into the SiLU and multiplicative branches.
     """
 
     def __init__(
@@ -127,18 +168,29 @@ class SwiGLU(nnx.Module):
         d_model: int,
         d_ff: int,
         dtype: jnp.dtype = jnp.float32,
+        fuse_up_gate: bool = True,
     ):
         # Match PyTorch's round-to-64 for hardware alignment.
         d_ff = int(d_ff // 64 * 64)
         self.d_model = d_model
         self.d_ff = d_ff
         self.dtype = dtype
-        self.w_up = Linear(rngs, d_model, d_ff, dtype)
-        self.w_gate = Linear(rngs, d_model, d_ff, dtype)
+        self.fuse_up_gate = bool(fuse_up_gate)
+        if self.fuse_up_gate:
+            self.w_up_gate = Linear(rngs, d_model, 2 * d_ff, dtype)
+        else:
+            self.w_up = Linear(rngs, d_model, d_ff, dtype)
+            self.w_gate = Linear(rngs, d_model, d_ff, dtype)
         self.w_down = Linear(rngs, d_ff, d_model, dtype)
 
     def __call__(self, x: Array) -> Array:
-        return self.w_down(jax.nn.silu(self.w_up(x)) * self.w_gate(x))
+        if self.fuse_up_gate:
+            projected = self.w_up_gate(x)
+            up, gate = jnp.split(projected, 2, axis=-1)
+        else:
+            up = self.w_up(x)
+            gate = self.w_gate(x)
+        return self.w_down(jax.nn.silu(up) * gate)
 
 
 def rms_normalize_last_dim(x: Array, eps: float = 1e-6) -> Array:

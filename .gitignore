@@ -17,6 +17,8 @@ aws/
 **/*.sh
 **/*.ipynb
 data/
+!jax/data/
+!jax/data/*.py
 data_tokenized/
 **/__pycache__
 **/.DS_Store

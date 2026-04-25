@@ -104,20 +104,27 @@ def test_swiglu():
     d_model, d_ff = 32, 128
     pt = PSwiGLU(d_model, d_ff)
     jx = JSwiGLU(nnx.Rngs(0), d_model, d_ff)
-    # PT fuses up+gate into a single Linear (d_model -> 2*d_ff) and chunks.
-    # JAX splits into two. Copy halves correctly.
-    # In PT, proj = up(x) -> (left, right); silu(left) * right.
-    # left  <- first d_ff output rows of up.linear.weight
-    # right <- second d_ff output rows
-    W = pt.up.linear.weight.detach()                 # (2*d_ff, d_model)
-    W_up_pt, W_gate_pt = W[:d_ff], W[d_ff:]
-    jx.w_up.weight.value   = to_jnp(W_up_pt)
-    jx.w_gate.weight.value = to_jnp(W_gate_pt)
+    jx.w_up_gate.weight.value = to_jnp(pt.up.linear.weight)
     jx.w_down.weight.value = to_jnp(pt.down.linear.weight)
     x_pt = torch.randn(2, 3, d_model)
     y_pt = pt(x_pt)
     y_jx = jx(to_jnp(x_pt))
     assert_close("SwiGLU forward", y_jx, y_pt.detach(), atol=1e-4, rtol=1e-4)
+
+
+def test_swiglu_split_projection():
+    print("[SwiGLU split projection]")
+    d_model, d_ff = 32, 128
+    pt = PSwiGLU(d_model, d_ff)
+    jx = JSwiGLU(nnx.Rngs(0), d_model, d_ff, fuse_up_gate=False)
+    W = pt.up.linear.weight.detach()
+    jx.w_up.weight.value = to_jnp(W[:d_ff])
+    jx.w_gate.weight.value = to_jnp(W[d_ff:])
+    jx.w_down.weight.value = to_jnp(pt.down.linear.weight)
+    x_pt = torch.randn(2, 3, d_model)
+    y_pt = pt(x_pt)
+    y_jx = jx(to_jnp(x_pt))
+    assert_close("SwiGLU split forward", y_jx, y_pt.detach(), atol=1e-4, rtol=1e-4)
 
 # ---- RoPE (module-level) ----------------------------------------------
 def test_rope():
@@ -173,17 +180,14 @@ def test_rope_token_positions_broadcast():
 
 # ---- MHSA --------------------------------------------------------------
 def copy_mhsa(pt, jx, d_model, n_heads, n_kv_heads):
-    """Copy PT fused QKV + O into JAX split Q, K, V, O."""
+    """Copy PT fused QKV + O into JAX separate Q/K/V + O."""
     head_dim = d_model // n_heads
     q_out = n_heads * head_dim
     kv_out = n_kv_heads * head_dim
-    W = pt.qkv.linear.weight.detach()         # ((q_out + 2*kv_out), d_model)
-    Wq = W[:q_out]
-    Wk = W[q_out:q_out + kv_out]
-    Wv = W[q_out + kv_out:]
-    jx.W_q.weight.value = to_jnp(Wq)
-    jx.W_k.weight.value = to_jnp(Wk)
-    jx.W_v.weight.value = to_jnp(Wv)
+    W = pt.qkv.linear.weight.detach()
+    jx.W_q.weight.value = to_jnp(W[:q_out])
+    jx.W_k.weight.value = to_jnp(W[q_out:q_out + kv_out])
+    jx.W_v.weight.value = to_jnp(W[q_out + kv_out:])
     jx.W_o.weight.value = to_jnp(pt.out.linear.weight)
 
 def test_mhsa():
@@ -213,6 +217,18 @@ def test_mhsa_gqa():
     y_jx, _ = jx(to_jnp(x_pt))
     assert_close("MHSA GQA out", y_jx, y_pt.detach(), atol=3e-4, rtol=3e-4)
 
+
+def test_mhsa_split_qkv():
+    print("[MultiHeadSelfAttention - split QKV]")
+    d_model, n_heads = 32, 4
+    pt = PMHSA(d_model, n_heads)
+    jx = JMHSA(nnx.Rngs(0), d_model, n_heads, fuse_qkv=False)
+    copy_mhsa(pt, jx, d_model, n_heads, n_heads)
+    x_pt = torch.randn(2, 6, d_model)
+    y_pt, _ = pt(x_pt)
+    y_jx, _ = jx(to_jnp(x_pt))
+    assert_close("MHSA split QKV out", y_jx, y_pt.detach(), atol=3e-4, rtol=3e-4)
+
 # ---- Block -------------------------------------------------------------
 def copy_block(pt, jx, d_model, n_heads, n_kv_heads):
     # ln1, ln2
@@ -221,10 +237,13 @@ def copy_block(pt, jx, d_model, n_heads, n_kv_heads):
     # attn
     copy_mhsa(pt.attn, jx.attn, d_model, n_heads, n_kv_heads)
     # ffn (SwiGLU)
-    d_ff = pt.ffn.down.linear.weight.shape[1]        # down: (d_model, d_ff)
     W = pt.ffn.up.linear.weight.detach()
-    jx.ffn.w_up.weight.value   = to_jnp(W[:d_ff])
-    jx.ffn.w_gate.weight.value = to_jnp(W[d_ff:])
+    if hasattr(jx.ffn, "w_up_gate"):
+        jx.ffn.w_up_gate.weight.value = to_jnp(W)
+    else:
+        d_ff = pt.ffn.down.linear.weight.shape[1]
+        jx.ffn.w_up.weight.value = to_jnp(W[:d_ff])
+        jx.ffn.w_gate.weight.value = to_jnp(W[d_ff:])
     jx.ffn.w_down.weight.value = to_jnp(pt.ffn.down.linear.weight)
 
 def test_block():
@@ -285,10 +304,12 @@ if __name__ == "__main__":
     test_embedding()
     test_rmsnorm()
     test_swiglu()
+    test_swiglu_split_projection()
     test_rope()
     test_rope_token_positions_broadcast()
     test_mhsa()
     test_mhsa_gqa()
+    test_mhsa_split_qkv()
     test_value_residual()
     test_block()
     test_transformer()

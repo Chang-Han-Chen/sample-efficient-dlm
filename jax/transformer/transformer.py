@@ -10,6 +10,8 @@ Notes on activation checkpointing (grad-checkpointing):
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -31,6 +33,31 @@ except ImportError:          # pragma: no cover - fallback for flax < 0.11
     _ModuleList = list
 
 
+def has_value_embedding_layer(
+    layer_idx: int,
+    n_layers: int,
+    placement: str | Sequence[int] | None = "alternating",
+) -> bool:
+    """Return whether a 0-indexed layer should receive token value embeddings."""
+    if placement is None:
+        return False
+    if isinstance(placement, str):
+        placement = placement.lower()
+        if placement in ("none", "off", "false"):
+            return False
+        if placement == "all":
+            return True
+        if placement == "final":
+            return layer_idx == n_layers - 1
+        if placement == "alternating":
+            return layer_idx % 2 == (n_layers - 1) % 2
+        raise ValueError(
+            "value_embedding_layers must be one of 'alternating', 'all', "
+            "'final', 'none', or a sequence of layer indices"
+        )
+    return layer_idx in set(int(i) for i in placement)
+
+
 class Block(nnx.Module):
     def __init__(
         self,
@@ -38,13 +65,22 @@ class Block(nnx.Module):
         d_model: int,
         n_heads: int,
         d_ff: int,
+        vocab_size: int | None = None,
         attn_qknorm: bool = False,
         attn_val_residual: bool = False,
         attn_gating: str | bool | None = False,
+        value_embedding: bool = False,
+        value_embedding_scale: float = 1.0,
+        value_embedding_gate_channels: int = 32,
+        value_embedding_init_std: float | None = None,
         n_kv_heads: int | None = None,
         theta_base: float = 10_000.0,
         depth_position: int | None = None,
         max_seq_len: int = 8192,
+        is_causal: bool = True,
+        attention_impl: str | None = None,
+        fuse_qkv: bool = True,
+        fuse_swiglu: bool = True,
         dtype: jnp.dtype = jnp.float32,
     ):
         self.ln1 = RMSNorm(rngs, d_model, dtype=dtype, depth_position=depth_position)
@@ -52,24 +88,42 @@ class Block(nnx.Module):
             rngs,
             d_model,
             n_heads,
+            vocab_size=vocab_size,
             n_kv_heads=n_kv_heads,
             theta_base=theta_base,
             max_seq_len=max_seq_len,
             qknorm=attn_qknorm,
             value_residual=attn_val_residual,
+            value_embedding=value_embedding,
+            value_embedding_scale=value_embedding_scale,
+            value_embedding_gate_channels=value_embedding_gate_channels,
+            value_embedding_init_std=value_embedding_init_std,
             gating=attn_gating,
+            is_causal=is_causal,
+            attention_impl=attention_impl,
+            fuse_qkv=fuse_qkv,
             dtype=dtype,
         )
         self.ln2 = RMSNorm(rngs, d_model, dtype=dtype, depth_position=depth_position)
-        self.ffn = SwiGLU(rngs, d_model, d_ff, dtype=dtype)
+        self.ffn = SwiGLU(rngs, d_model, d_ff, dtype=dtype, fuse_up_gate=fuse_swiglu)
 
     def __call__(
         self,
         x: Float[Array, "b seq d"],
         token_positions: Int[Array, "b seq"] | None = None,
-        v1: Float[Array, "b seq h head_dim"] | None = None,
-    ) -> tuple[Float[Array, "b seq d"], Float[Array, "b seq h head_dim"]]:
-        attn_out, v = self.attn(self.ln1(x), token_positions, v1)
+        v1: Float[Array, "b seq kv_h head_dim"] | None = None,
+        token_ids: Int[Array, "b seq"] | None = None,
+        attention_mask: Array | None = None,
+        is_causal: bool | None = None,
+    ) -> tuple[Float[Array, "b seq d"], Float[Array, "b seq kv_h head_dim"]]:
+        attn_out, v = self.attn(
+            self.ln1(x),
+            token_positions,
+            v1,
+            token_ids=token_ids,
+            attention_mask=attention_mask,
+            is_causal=is_causal,
+        )
         x = x + attn_out
         x = x + self.ffn(self.ln2(x))
         return x, v
@@ -87,16 +141,27 @@ class Transformer(nnx.Module):
         attn_qknorm: bool = False,
         attn_val_residual: bool = False,
         attn_gating: str | bool | None = False,
+        value_embedding: bool = False,
+        value_embedding_scale: float = 1.0,
+        value_embedding_layers: str | Sequence[int] | None = "alternating",
+        value_embedding_gate_channels: int = 32,
+        value_embedding_init_std: float | None = None,
         layernorm_scaling: bool = False,
         theta_base: float = 10_000.0,
         n_kv_heads: int | None = None,
         max_seq_len: int = 8192,
+        is_causal: bool = True,
+        attention_impl: str | None = None,
+        fuse_qkv: bool = True,
+        fuse_swiglu: bool = True,
         dtype: jnp.dtype = jnp.float32,
         weight_tying: bool = False,
         num_grad_checkpoint_layers: int = 0,
     ):
         self.n_layers = n_layers
         self.num_grad_checkpoint_layers = num_grad_checkpoint_layers
+        self.value_embedding = value_embedding
+        self.value_embedding_layers = value_embedding_layers
 
         self.embedding = Embedding(rngs, vocab_size, d_model, dtype=dtype)
         self.blocks = _ModuleList(
@@ -106,13 +171,25 @@ class Transformer(nnx.Module):
                     d_model,
                     n_heads,
                     d_ff,
+                    vocab_size=vocab_size,
                     attn_qknorm=attn_qknorm,
                     attn_val_residual=attn_val_residual,
                     attn_gating=attn_gating,
+                    value_embedding=(
+                        value_embedding
+                        and has_value_embedding_layer(pos - 1, n_layers, value_embedding_layers)
+                    ),
+                    value_embedding_scale=value_embedding_scale,
+                    value_embedding_gate_channels=value_embedding_gate_channels,
+                    value_embedding_init_std=value_embedding_init_std,
                     n_kv_heads=n_kv_heads,
                     theta_base=theta_base,
                     depth_position=pos if layernorm_scaling else None,
                     max_seq_len=max_seq_len,
+                    is_causal=is_causal,
+                    attention_impl=attention_impl,
+                    fuse_qkv=fuse_qkv,
+                    fuse_swiglu=fuse_swiglu,
                     dtype=dtype,
                 )
                 for pos in range(1, n_layers + 1)
@@ -125,11 +202,14 @@ class Transformer(nnx.Module):
             # Both weights are stored (vocab, d_model) so this is shape-safe.
             self.lm_head.weight = self.embedding.weight
 
-    def __call__(
+    def encode(
         self,
         token_ids: Int[Array, "b seq"],
         token_positions: Int[Array, "b seq"] | None = None,
-    ) -> Float[Array, "b seq vocab"]:
+        attention_mask: Array | None = None,
+        is_causal: bool | None = None,
+    ) -> Float[Array, "b seq d"]:
+        """Return final normalized hidden states without materializing logits."""
         x = self.embedding(token_ids)
 
         v1 = None
@@ -138,11 +218,49 @@ class Transformer(nnx.Module):
                 # nnx.remat wraps the stateful callable so the forward is
                 # recomputed during the backward pass to save activations.
                 rematted = nnx.remat(block)
-                x, v = rematted(x, token_positions, v1)
+                x, v = rematted(
+                    x,
+                    token_positions,
+                    v1,
+                    token_ids,
+                    attention_mask,
+                    is_causal,
+                )
             else:
-                x, v = block(x, token_positions, v1)
+                x, v = block(
+                    x,
+                    token_positions,
+                    v1,
+                    token_ids,
+                    attention_mask,
+                    is_causal,
+                )
             if v1 is None:
                 v1 = v
 
-        x = self.final_norm(x)
-        return self.lm_head(x)
+        return self.final_norm(x)
+
+    def project_logits(
+        self,
+        hidden_states: Float[Array, "b seq d"],
+    ) -> Float[Array, "b seq vocab"]:
+        """Project final hidden states to vocabulary logits."""
+        return self.lm_head(hidden_states)
+
+    def __call__(
+        self,
+        token_ids: Int[Array, "b seq"],
+        token_positions: Int[Array, "b seq"] | None = None,
+        attention_mask: Array | None = None,
+        is_causal: bool | None = None,
+        return_hidden: bool = False,
+    ) -> Float[Array, "b seq vocab"] | Float[Array, "b seq d"]:
+        hidden = self.encode(
+            token_ids,
+            token_positions=token_positions,
+            attention_mask=attention_mask,
+            is_causal=is_causal,
+        )
+        if return_hidden:
+            return hidden
+        return self.project_logits(hidden)
