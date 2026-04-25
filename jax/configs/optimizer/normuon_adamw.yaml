@@ -1,0 +1,16 @@
+name: normuon_adamw
+optimizer: NorMuonCWD+AdamW
+table_adam_lr: 0.6
+scalar_adam_lr: 0.005
+muon_lr: 0.04
+adam_wd: 0.0
+muon_wd: 0.2
+adam_betas: [0.8, 0.95]
+adam_eps: 1.0e-10
+muon_beta2: 0.95
+muon_momentum: 0.95
+momentum_warmup_steps: 300
+momentum_warmup_start: 0.85
+max_grad_norm: 1.0
+z_loss_weight: 0.0001
+lr_sweep: greedy_global_lr_mult

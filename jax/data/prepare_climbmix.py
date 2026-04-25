@@ -23,7 +23,7 @@ from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 BASE_URL = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
 MAX_SHARD = 6542
 VAL_SHARD = MAX_SHARD
-BASE_VOCAB_SIZE = 32768
+BASE_VOCAB_SIZE = 8192
 SPECIAL_TOKENS = [f"<|reserved_{i}|>" for i in range(4)]
 BOS_TOKEN = SPECIAL_TOKENS[0]
 SPLIT_PATTERN = (

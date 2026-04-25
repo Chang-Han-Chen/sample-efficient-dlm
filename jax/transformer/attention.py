@@ -126,6 +126,7 @@ class MultiHeadSelfAttention(nnx.Module):
         is_causal: bool = True,
         attention_impl: AttentionImpl = None,
         fuse_qkv: bool = True,
+        linear_init_std: float | None = None,
         dtype: jnp.dtype = jnp.float32,
     ):
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
@@ -150,6 +151,7 @@ class MultiHeadSelfAttention(nnx.Module):
             raise ValueError("attention_impl must be one of None, 'xla', or 'cudnn'")
         self.attention_impl = attention_impl
         self.fuse_qkv = bool(fuse_qkv)
+        self.linear_init_std = linear_init_std
 
         self.q_out = self.n_heads * self.head_dim
         self.kv_out = self.n_kv_heads * self.head_dim
@@ -157,10 +159,10 @@ class MultiHeadSelfAttention(nnx.Module):
         # Keep Q/K/V as separate trainable matrices so Muon sees separate
         # matrix parameters. When `fuse_qkv=True`, only the forward matmul is
         # fused by concatenating these weights inside `__call__`.
-        self.W_q = Linear(rngs, d_model, self.q_out, dtype=dtype)
-        self.W_k = Linear(rngs, d_model, self.kv_out, dtype=dtype)
-        self.W_v = Linear(rngs, d_model, self.kv_out, dtype=dtype)
-        self.W_o = Linear(rngs, d_model, d_model, dtype=dtype)
+        self.W_q = Linear(rngs, d_model, self.q_out, dtype=dtype, init_std=linear_init_std)
+        self.W_k = Linear(rngs, d_model, self.kv_out, dtype=dtype, init_std=linear_init_std)
+        self.W_v = Linear(rngs, d_model, self.kv_out, dtype=dtype, init_std=linear_init_std)
+        self.W_o = Linear(rngs, d_model, d_model, dtype=dtype, init_std=linear_init_std)
 
         self.rope = RotaryPositionalEmbedding(
             rngs, theta_base, self.head_dim, max_seq_len, dtype=dtype
@@ -193,6 +195,7 @@ class MultiHeadSelfAttention(nnx.Module):
                 self.value_embedding_gate_channels,
                 self.n_kv_heads,
                 dtype=dtype,
+                init_std=linear_init_std,
             )
             self.value_embedding_gate.weight.value = jnp.zeros_like(
                 self.value_embedding_gate.weight.value
@@ -200,11 +203,17 @@ class MultiHeadSelfAttention(nnx.Module):
 
         if self.gating:
             if self.gating == "elementwise":
-                self.attn_gate = Linear(rngs, d_model, d_model, dtype=dtype)
+                self.attn_gate = Linear(rngs, d_model, d_model, dtype=dtype, init_std=linear_init_std)
             elif self.gating == "per-head":
-                self.attn_gate = Linear(rngs, d_model, n_heads, dtype=dtype)
+                self.attn_gate = Linear(rngs, d_model, n_heads, dtype=dtype, init_std=linear_init_std)
             elif self.gating == "per-head-hd":
-                self.attn_gate = Linear(rngs, self.head_dim, n_heads, dtype=dtype)
+                self.attn_gate = Linear(
+                    rngs,
+                    self.head_dim,
+                    n_heads,
+                    dtype=dtype,
+                    init_std=linear_init_std,
+                )
             else:
                 raise ValueError(f"gating={self.gating!r} is not a known mode")
 

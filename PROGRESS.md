@@ -6,10 +6,9 @@ profiling, or conclusions change materially.
 
 ## Current Objective
 
-Move from the AR bring-up into diffusion. The next objective is to add MDLM
-and BD3LM training paths on top of the same JAX transformer backbone, matching
-the `baby-dLM/` objective and mask semantics first, then profiling BD3 memory
-and attention behavior on the A100.
+Run the AR intervention ablation matrix from config files before moving back
+to diffusion. The immediate matrix is baseline, old bundle, old bundle plus
+value embeddings, and non-muP/hidden-dimension initialization.
 
 ## User Decisions
 
@@ -17,14 +16,11 @@ and attention behavior on the A100.
 - Tie token embeddings and LM head by default.
 - Use the fixed small GPT shape for sanity/profiling:
   `d_model=768`, `d_ff=2048`, `n_layers=8`, `n_heads=12`,
-  `n_kv_heads=None`, `vocab_size=32768`, bf16.
+  `n_kv_heads=None`, active `vocab_size=8192`, bf16.
 - Treat baseline architecture as old intervention flags off.
 - Treat the "old architecture" profile as QK-norm + value residual +
   layernorm/depth scaling + per-head attention gating, with weight tying still
-  enabled. If comparing to the strict `gpt_small_faster.py` old bundle, label
-  that separately because that PyTorch small config clearly includes QK-norm,
-  value residual, and layernorm/depth scaling, while gating appears in larger
-  final configs.
+  enabled.
 
 ## Implemented Backbone Features
 
@@ -34,9 +30,13 @@ and attention behavior on the A100.
   state return before logits.
 - Weight tying is real in JAX: `lm_head.weight` is the exact same `nnx.Param`
   object as `embedding.weight`, and NNX state exposes only `embedding.weight`.
-- Value embeddings follow PLAN.md Option D:
+- Value embeddings follow the single PLAN.md value-embedding definition:
   first cache raw first-layer value stream, apply value-residual normalization,
   then add token value embeddings after the residual mixture.
+- PLAN.md now keeps only this value-embedding definition; the earlier A/B/C
+  alternatives were removed.
+- Initialization is config-controlled with `init_mode=mup` for the current
+  PyTorch-compatible path and `init_mode=hidden_dim` for the non-muP ablation.
 - Attention uses `jax.nn.dot_product_attention`; cuDNN implementation is used
   for A100 profiling when requested.
 - Added diffusion mask helpers for future MDLM/BD3LM work.
@@ -51,9 +51,11 @@ and attention behavior on the A100.
   non-matrix params use AdamW.
 - Added ClimbMix preparation and inspection utilities.
 - Smoke ClimbMix data exists at `data/climbmix_smoke/` and is ignored by git.
-- Tokenizer sanity checks passed:
-  vocab size `32768`, specials IDs `0..3`, diffusion mask ID `32768`,
-  sample roundtrips matched, token byte stats looked normal.
+- Active AR ablation configs use `data/climbmix_smoke_8192/`:
+  base vocab `8192`, diffusion vocab `8193`, mask token id `8192`.
+- Tokenizer sanity checks passed for both the original `32768` setup and the
+  active `8192` setup: specials IDs `0..3`, diffusion mask ID equal to base
+  vocab size, sample roundtrips matched, token byte stats looked normal.
 - Loader sanity checks passed across multiple batch sizes:
   shapes correct, IDs in range, shift relation correct.
 
@@ -651,3 +653,270 @@ Next profile:
 - Then test whether blocked attention plus `--grad-checkpoint-layers 8` allows
   BD3 microbatch `64`, because reducing grad accumulation from `16` to `8` is
   the practical target for fixed effective batch `512`.
+
+## cuDNN Attention Retest and Microbatch Ceiling
+
+Retested the seq512 baseline architecture with explicit
+`--attention-impl cudnn`, full logits, tied embeddings, bf16, NorMuonCWD+AdamW,
+and effective batch target `512` clean sequences.
+
+Implementation detail:
+
+- AR uses `is_causal=True` and no explicit mask.
+- MDLM uses bidirectional attention and no explicit mask.
+- BD3 dense mode uses a broadcast dense mask of shape `(1, 1, 2L, 2L)`, not
+  `(B, H, 2L, 2L)`.
+- Added a default persistent JAX compilation cache to `jax/train_ar.py`:
+  `/tmp/sample_efficient_gpt_jax_cache`. It only helps repeated identical
+  shape/static-argument launches; new batch sizes still compile once.
+
+Full-logit cuDNN ceiling at clean `seq_len=512`:
+
+| objective | largest divisor microbatch | grad accum for 512 | microstep time | optimizer-step wall | 5k-step wall | clean tok/s | JAX peak HBM | notes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| AR | 128 | 4 | `0.2640s` | `1.06s` | `1.47h` | `248k` | `29.02 GB` | b256 OOM, b512 OOM |
+| MDLM | 128 | 4 | `0.3463s` | `1.39s` | `1.92h` | `189k` | `29.02 GB` | b256 OOM |
+| BD3LM | 128 | 4 | `0.7386s` | `2.95s` | `4.10h` | `88.7k` | `43.42 GB` | b192 OOM, so b256 is not viable |
+
+Specific OOMs:
+
+- AR b512 full logits: `87.25 GiB` allocation.
+- AR b256 full logits: `46.81 GiB` allocation.
+- MDLM b256 full logits: `46.81 GiB` allocation.
+- BD3LM b192 full logits: `49.73 GiB` allocation.
+
+cuDNN dense vs blocked BD3 at b32:
+
+| BD3 attention | microbatch | microstep time | clean tok/s | JAX peak HBM |
+| --- | ---: | ---: | ---: | ---: |
+| dense cudnn | 32 | `0.2404s` | `68.1k` | `11.97 GB` |
+| blocked cudnn | 32 | `0.2391s` | `68.5k` | `13.32 GB` |
+
+The pure-JAX blocked decomposition is not a useful win at this shape. cuDNN's
+dense masked path is already strong, and splitting into several DPA calls
+increases compile complexity without improving steady-state throughput.
+
+Before-vs-after cuDNN, fixed effective batch `512`:
+
+| objective | earlier best setting | earlier optimizer step | cuDNN best setting | cuDNN optimizer step | result |
+| --- | --- | ---: | --- | ---: | --- |
+| AR | full b128 x accum4 | `1.061s` | full b128 x accum4 | `1.056s` | essentially unchanged |
+| MDLM | full b64 x accum8 | `1.99s` | full b128 x accum4 | `1.39s` | clearly better |
+| BD3LM | full b32 x accum16 | `5.03s` | full b128 x accum4 | `2.95s` | clearly better |
+
+Chunked-CE retest under cuDNN:
+
+| objective | loss impl | microbatch | status | microstep time | optimizer-step wall for 512 | JAX peak HBM | interpretation |
+| --- | --- | ---: | --- | ---: | ---: | ---: | --- |
+| AR | chunked, 32768 | 512 | OOM | - | - | - | `54.25 GiB` allocation |
+| AR | chunked, 32768 | 256 | fit | `0.5592s` | `1.12s` | `37.68 GB` | more memory, slower than full b128 |
+| MDLM | chunked, 32768 | 256 | fit | `0.7432s` | `1.49s` | `37.67 GB` | more memory, slower than full b128 |
+| BD3LM | chunked, 32768 | 256 | OOM | - | - | - | `56.51 GiB` allocation |
+
+Conclusion:
+
+- cuDNN attention is a major win for MDLM and BD3, and should be the default on
+  the A100.
+- AR at seq512 is not attention-bound; the final vocabulary projection/loss is
+  the practical limiter.
+- The current pure-JAX chunked CE can increase the fitting microbatch for
+  AR/MDLM but does not improve fixed-effective-batch wall time.
+- Smaller vocab would reduce the bottleneck linearly in `vocab_size`, but it
+  would change the tokenizer/text-per-token/BPB setup. Keep vocab `32768` for
+  the main experiments and treat smaller vocab only as a profiling or tokenizer
+  ablation.
+- The next real optimization target is a faster fused linear cross entropy or a
+  better custom VJP/Pallas implementation, not the current chunked CE.
+
+## Vocab 8192 Profiling Ablation
+
+Retrained a separate smoke tokenizer/data directory with base vocab size
+`8192`:
+
+- data root: `data/climbmix_smoke_8192`
+- diffusion mask token id: `8192`
+- train shard token count: `64,600,095`
+- old vocab32768 train shard token count: `55,468,937`
+- token-count ratio for the same raw text: `1.1646x`
+
+Sanity checks:
+
+- Token IDs in the train/val arrays are in range `0..8191`.
+- Encode/decode roundtrips passed for English, code, numbers, and Unicode.
+- Loader batches at sizes `4`, `17`, and `128` had the expected AR shift and
+  no out-of-range IDs.
+
+Seq512, cuDNN attention, full logits, tied embeddings, bf16:
+
+| objective | vocab | best microbatch | accum for 512 | microstep time | optimizer-step wall | 5k-step wall | clean tok/s | est TFLOP/s | est MFU | JAX peak HBM | OOM notes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| AR | 32768 | 128 | 4 | `0.2640s` | `1.056s` | `1.47h` | `248k` | `168.7` | `54.1%` | `29.02 GB` | b256/b512 OOM |
+| AR | 8192 | 256 | 2 | `0.3925s` | `0.785s` | `1.09h` | `334k` | `151.3` | `48.5%` | `36.38 GB` | b512 OOM |
+| MDLM | 32768 | 128 | 4 | `0.3463s` | `1.385s` | `1.92h` | `189k` | `128.6` | `41.2%` | `29.02 GB` | b256 OOM |
+| MDLM | 8192 | 256 | 2 | `0.5084s` | `1.017s` | `1.41h` | `258k` | `116.8` | `37.4%` | `36.38 GB` | b512 OOM |
+| BD3LM | 32768 | 128 | 4 | `0.7386s` | `2.954s` | `4.10h` | `88.7k` | `127.3` | `40.8%` | `43.42 GB` | b192 OOM |
+| BD3LM | 8192 | 256 | 2 | `1.1562s` | `2.312s` | `3.21h` | `113k` | `111.3` | `35.7%` | `62.03 GB` | b512 OOM |
+
+Token-normalized speedups from vocab32768 to vocab8192:
+
+- AR: `1.35x` faster per effective token batch.
+- MDLM: `1.36x` faster per effective token batch.
+- BD3LM: `1.28x` faster per effective token batch.
+
+Text-normalized caveat:
+
+The 8192 tokenizer emits `1.1646x` more tokens on the same raw training shard.
+If comparing equal raw-text throughput instead of equal token sequence length,
+the rough adjusted speedups are smaller:
+
+- AR: `~1.16x`.
+- MDLM: `~1.17x`.
+- BD3LM: `~1.10x`.
+
+Interpretation:
+
+- Smaller vocab does help the final projection/loss bottleneck and lets
+  AR/MDLM move from microbatch `128` to `256`.
+- BD3 also moves from microbatch `128` to `256`, but its model sequence length
+  is still doubled, so attention/backward memory remains important. The b256
+  run uses much more of the A100 (`~62 GB` JAX peak), which is closer to the
+  target utilization.
+- Estimated MFU goes down with vocab8192 because the model has fewer embedding
+  and effective LM-head FLOPs in the estimator. Wall time improves, but the
+  denominator-normalized utilization estimate drops from `54.1%` to `48.5%` for
+  AR, `41.2%` to `37.4%` for MDLM, and `40.8%` to `35.7%` for BD3.
+- User decided to proceed with vocab8192 for the current AR ablation matrix.
+  Scientific comparisons should keep this tokenizer fixed within the matrix.
+
+## AR Ablation Configs
+
+Updated `PLAN.md` and created a concrete config tree under `jax/configs/`:
+
+- `jax/configs/data/climbmix_8192.yaml`
+- `jax/configs/model/gpt_small_70m.yaml`
+- `jax/configs/optimizer/normuon_adamw.yaml`
+- `jax/configs/schedule/ws_100_5k.yaml`
+- `jax/configs/experiments/ar_baseline.yaml`
+- `jax/configs/experiments/ar_old_bundle.yaml`
+- `jax/configs/experiments/ar_value_embedding.yaml`
+- `jax/configs/experiments/ar_non_mup_init.yaml`
+
+All four AR experiment configs use:
+
+- `vocab_size=8192`, train/eval paths under `data/climbmix_smoke_8192/tokens/`
+- `seq_len=512`, microbatch `256`, grad accumulation `2`, effective batch
+  `512`
+- tied embeddings, bf16, cuDNN attention, full logits, QKV/SwiGLU forward
+  fusion enabled
+- NorMuonCWD+AdamW with base `adam_lr=0.007`, `muon_lr=0.015`, LR sweep
+  multipliers `[0.25, 0.5, 1.0, 2.0, 4.0]`
+- schedule `100` warmup steps plus `5000` constant steps (`5100` total)
+
+The configs are directly consumable by `train_ar.py` through `--config`, which
+loads the top-level `train_args` mapping. `--lr-mult` scales AdamW and Muon
+peak LRs together for sweeps.
+When `output_dir` is set, `train_ar.py` writes `resolved_config.json` there at
+launch time.
+Raw code defaults were also aligned to vocab8192:
+`train_ar.py --vocab-size`, `prepare_climbmix.py BASE_VOCAB_SIZE`, and
+`DiffusionConfig.mask_token_id`.
+
+Non-muP implementation note:
+
+- Added `init_mode=mup|hidden_dim`.
+- `mup` preserves the current/PyTorch-compatible fan-in initialization.
+- `hidden_dim` sets all linear-layer stds to `1/sqrt(d_model)`, which only
+  differs from fan-in where the input dimension is not `d_model` (notably FFN
+  down projections and small gate projections). Embeddings remain
+  `1/sqrt(d_model)`.
+
+Validation:
+
+- `python -m py_compile jax/train_ar.py jax/transformer/core.py jax/transformer/attention.py jax/transformer/transformer.py`
+- `python -m py_compile jax/train_ar.py jax/data/prepare_climbmix.py jax/training/diffusion.py`
+- `python jax/train_ar.py --config ... --max-steps 0 --eval-batches 0`
+  succeeded for all four AR experiment configs.
+- YAML load check over `jax/configs/**/*.yaml` passed.
+- `python jax/tests/test_parity.py` passed.
+- `python jax/tests/test_parity_extras.py` passed.
+- `python jax/tests/test_training_stack.py` passed.
+- `python jax/tests/test_diffusion_stack.py` passed.
+
+## Karpathy `train.py` Optimizer/Init Comparison
+
+Checked only `karpathy/train.py` as the reference for Karpathy-style value
+embeddings, initialization, and optimizer scaling.
+
+Conclusion: the current JAX configs are not doing the same thing. They follow
+the older `gpt_small_faster`-style optimizer recipe (`adam_lr=0.007`,
+`muon_lr=0.015`, `adam_betas=(0.95, 0.99)`, `muon_wd=1e-4`) more closely than
+Karpathy's `train.py`.
+
+Karpathy `train.py` initialization:
+
+- Token embedding: normal std `1.0`.
+- LM head: normal std `0.001`.
+- Q/K/V and MLP up: uniform with std `1/sqrt(d_model)`.
+- Attention output projection and MLP down projection: zeros.
+- Value embeddings: uniform with std `1/sqrt(d_model)`.
+- Value-embedding gate: zeros.
+
+Current JAX `init_mode=mup`:
+
+- Token embedding: truncated normal std `1/sqrt(d_model)`.
+- LM head: same as embedding when tied; otherwise truncated normal
+  `1/sqrt(d_model)`.
+- All linear layers: truncated normal std `1/sqrt(fan_in)`.
+- Output/down projections are not zero-initialized.
+- Value embeddings and gate zero-init match Karpathy's intended scale/gate
+  behavior, except the exact distribution only matches for the value embedding
+  table.
+
+Karpathy `train.py` optimizer scaling:
+
+- AdamW groups are split: unembedding lr `0.004`, embedding/value-embedding lr
+  `0.6`, residual scalar lr `0.005`, `x0` scalar lr `0.5`.
+- AdamW betas are `(0.8, 0.95)` for most Adam groups, `(0.96, 0.95)` for
+  `x0_lambdas`, eps `1e-10`, no AdamW weight decay.
+- AdamW embedding/unembedding/value-embedding lrs are multiplied by
+  `(d_model / 768)^-0.5`.
+- Muon lr is `0.04`; effective Muon lr also has
+  `sqrt(max(1, out_dim / in_dim))`.
+- Muon momentum warms from `0.85` to `0.95` over 300 steps.
+- Muon cautious weight decay starts at `0.2` and decays with wall-clock
+  progress in the time-budget schedule.
+
+Current JAX optimizer:
+
+- Uses one AdamW lr for embeddings, tied lm head, scalar/vector params, and
+  other non-matrix params.
+- Does not currently have separate embedding/value-embedding/unembedding/scalar
+  AdamW lrs or the Karpathy `(d_model / 768)^-0.5` Adam scaling.
+- Does apply the Muon `sqrt(max(1, out_dim / in_dim))` multiplier, momentum
+  warmup `0.85 -> 0.95`, and cautious weight decay.
+- Uses the PLAN schedule: 100-step warmup and constant peak lr through 5100
+  optimizer steps, so it intentionally differs from Karpathy's wall-clock
+  stable/warmdown schedule.
+
+Important implication: exact Karpathy init is incompatible with the current
+decision to tie token embeddings and LM head. Karpathy relies on separate token
+embedding std `1.0` and LM-head std `0.001`; tied weights cannot satisfy both.
+If tying stays enabled, the clean path is to add Karpathy-style optimizer group
+lrs and optionally a config-controlled zero-output-projection init, but not copy
+the embedding/head initialization literally.
+
+LR tuning implication from the Karpathy pattern:
+
+- The pattern is by parameter role, not by transformer layer.
+- For the tied JAX model, the minimal useful LR families are:
+  matrix Muon lr, table Adam lr, and scalar/vector Adam lr.
+- "Table" means token embedding / tied LM-head weight and token value-embedding
+  tables. If embeddings are untied later, unembedding should become a separate
+  fourth LR family because Karpathy uses a much smaller unembedding LR.
+- "Scalar/vector" includes RMSNorm gammas, QK gain, and the JAX value-residual
+  `alpha1`, `alpha2`, and `scale` parameters. These are our closest analogue to
+  Karpathy's learned residual/gain scalar groups, even though Karpathy's
+  `resid_lambdas`/`x0_lambdas` are not the same mechanism as value residual.
+- Do not run a full grid over all families for the first AR matrix. Set
+  Karpathy-inspired base ratios, then sweep one global `lr_mult`; only add a
+  small Muon-vs-Adam/table ratio spot check if the global sweep is ambiguous.

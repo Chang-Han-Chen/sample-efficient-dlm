@@ -1,10 +1,11 @@
 """NorMuon+AdamW optimizer for Flax NNX models.
 
-The grouping intentionally follows the PyTorch trainer:
+The grouping follows the role-based pattern in ``karpathy/train.py`` while
+keeping only three LR families for the tied-embedding JAX model:
 
-* AdamW for embeddings, value embeddings, lm head, scalar/vector params, and
-  any other non-matrix parameter.
-* NorMuon with cautious weight decay for the remaining 2D transformer matrices.
+* AdamW table params: token embedding / tied lm head, and value embeddings.
+* AdamW scalar/vector params: norms, QK gain, value-residual scalars.
+* NorMuon with cautious weight decay for the remaining matrix parameters.
 """
 
 from __future__ import annotations
@@ -22,14 +23,15 @@ Array = jax.Array
 
 @dataclass(frozen=True)
 class NormuonAdamWConfig:
-    adam_lr: float = 7e-3
-    muon_lr: float = 1.5e-2
+    table_adam_lr: float = 0.6
+    scalar_adam_lr: float = 5e-3
+    muon_lr: float = 4e-2
     adam_weight_decay: float = 0.0
-    muon_weight_decay: float = 1e-4
-    adam_betas: tuple[float, float] = (0.95, 0.99)
+    muon_weight_decay: float = 0.2
+    adam_betas: tuple[float, float] = (0.8, 0.95)
     muon_momentum: float = 0.95
     muon_beta2: float = 0.95
-    adam_eps: float = 1e-8
+    adam_eps: float = 1e-10
     warmup_steps: int = 100
     momentum_warmup_steps: int = 300
     momentum_warmup_start: float = 0.85
@@ -59,8 +61,20 @@ def _path_to_str(path: tuple[object, ...]) -> str:
     return ".".join(str(part) for part in path)
 
 
-def _is_adam_param(path: str, value: Array) -> bool:
-    return value.ndim < 2 or "embedding" in path or "lm_head" in path
+def _is_table_param(path: str) -> bool:
+    return (
+        path == "embedding.weight"
+        or path == "lm_head.weight"
+        or path.endswith(".value_embedding_table.weight")
+    )
+
+
+def _param_kind(path: str, value: Array) -> str:
+    if _is_table_param(path):
+        return "adam_table"
+    if value.ndim < 2:
+        return "adam_scalar"
+    return "muon"
 
 
 def build_param_specs(model) -> nnx.State:
@@ -69,13 +83,13 @@ def build_param_specs(model) -> nnx.State:
     for path, variable in nnx.to_flat_state(nnx.state(model, nnx.Param)):
         path_str = _path_to_str(path)
         value = variable.value
-        kind = "adamw" if _is_adam_param(path_str, value) else "muon"
+        kind = _param_kind(path_str, value)
         flat.append((path, ParamSpec(kind=kind, path=path_str, shape=tuple(value.shape))))
     return nnx.from_flat_state(flat, cls=nnx.State)
 
 
-def learning_rates(step: Array, cfg: NormuonAdamWConfig) -> tuple[Array, Array]:
-    """Return AdamW and Muon learning rates for this optimizer step."""
+def learning_rates(step: Array, cfg: NormuonAdamWConfig) -> tuple[Array, Array, Array]:
+    """Return table-AdamW, scalar-AdamW, and Muon LRs for this optimizer step."""
     step_f = step.astype(jnp.float32)
     warmup = max(int(cfg.warmup_steps), 1)
     if cfg.scheduler == "warmup_stable":
@@ -84,7 +98,7 @@ def learning_rates(step: Array, cfg: NormuonAdamWConfig) -> tuple[Array, Array]:
         mult = jnp.ones((), dtype=jnp.float32)
     else:
         raise ValueError(f"Unsupported scheduler: {cfg.scheduler!r}")
-    return cfg.adam_lr * mult, cfg.muon_lr * mult
+    return cfg.table_adam_lr * mult, cfg.scalar_adam_lr * mult, cfg.muon_lr * mult
 
 
 def _muon_momentum(step: Array, cfg: NormuonAdamWConfig) -> Array:
@@ -184,12 +198,13 @@ def create_normuon_adamw(model, cfg: NormuonAdamWConfig) -> optax.GradientTransf
         )
 
     def update_fn(grads, state: NormuonAdamWState, params):
-        adam_lr, muon_lr = learning_rates(state.count, cfg)
+        table_adam_lr, scalar_adam_lr, muon_lr = learning_rates(state.count, cfg)
         muon_momentum = _muon_momentum(state.count, cfg)
         t = state.count.astype(jnp.float32) + 1.0
 
         def update_leaf(grad, param, spec, adam_m, adam_v, muon_m, muon_second):
-            if spec.kind == "adamw":
+            if spec.kind in ("adam_table", "adam_scalar"):
+                adam_lr = table_adam_lr if spec.kind == "adam_table" else scalar_adam_lr
                 beta1, beta2 = cfg.adam_betas
                 new_m = beta1 * adam_m + (1.0 - beta1) * grad
                 new_v = beta2 * adam_v + (1.0 - beta2) * (grad * grad)

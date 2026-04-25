@@ -1,0 +1,68 @@
+name: ar_old_bundle
+description: "AR old intervention bundle: QK-norm, value residual, layernorm scaling, and per-head attention gating."
+tags: [ar, old_bundle, qknorm, value_residual, layernorm_scaling, attention_gating, seq512, vocab8192]
+base_configs:
+  data: jax/configs/data/climbmix_8192.yaml
+  model: jax/configs/model/gpt_small_70m.yaml
+  optimizer: jax/configs/optimizer/normuon_adamw.yaml
+  schedule: jax/configs/schedule/ws_100_5k.yaml
+lr_sweep: greedy_global_lr_mult
+effective_batch_size: 512
+train_args:
+  objective: ar
+  train_path: data/climbmix_smoke_8192/tokens/train
+  eval_path: data/climbmix_smoke_8192/tokens/val
+  seed: 42
+  run_name: ar_old_bundle
+  wandb_group: ar_matrix
+  wandb_tags: [ar, old_bundle, seq512, vocab8192]
+  output_dir: runs/ar_matrix/ar_old_bundle
+  max_steps: 5100
+  warmup_steps: 100
+  batch_size: 256
+  grad_accum_steps: 2
+  context_length: 512
+  vocab_size: 8192
+  d_model: 768
+  d_ff: 2048
+  n_layers: 8
+  n_heads: 12
+  n_kv_heads: null
+  dtype: bfloat16
+  init_mode: mup
+  attention_impl: cudnn
+  disable_qkv_fusion: false
+  disable_swiglu_fusion: false
+  attn_qknorm: true
+  attn_val_residual: true
+  attn_gating: per-head
+  layernorm_scaling: true
+  value_embedding: false
+  value_embedding_scale: 0.0
+  weight_tying: true
+  grad_checkpoint_layers: 0
+  table_adam_lr: 0.6
+  scalar_adam_lr: 0.005
+  muon_lr: 0.04
+  lr_mult: 1.0
+  adam_wd: 0.0
+  muon_wd: 0.2
+  adam_beta1: 0.8
+  adam_beta2: 0.95
+  adam_eps: 1.0e-10
+  muon_beta2: 0.95
+  muon_momentum: 0.95
+  momentum_warmup_steps: 300
+  momentum_warmup_start: 0.85
+  z_loss_weight: 0.0001
+  max_grad_norm: 1.0
+  loss_impl: full
+  logit_chunk_size: 1024
+  log_every: 50
+  eval_batches: 4
+  measure_start_step: 5
+  peak_flops: 312000000000000.0
+  compilation_cache_dir: /tmp/sample_efficient_gpt_jax_cache
+  disable_compilation_cache: false
+  explain_cache_misses: false
+  log_jsonl: runs/ar_matrix/ar_old_bundle/lr1p0/train.jsonl

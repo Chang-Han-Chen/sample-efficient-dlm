@@ -29,7 +29,7 @@ class DiffusionConfig:
     t_min: float = 0.45
     t_max: float = 0.95
     noise_schedule: Literal["linear", "cosine"] = "linear"
-    mask_token_id: int = 32768
+    mask_token_id: int = 8192
     block_len: int = 128
 
 

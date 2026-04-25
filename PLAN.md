@@ -88,8 +88,8 @@ Reference: `karpathy/prepare.py` downloads from `karpathy/climbmix-400b-shuffle`
 
 Requirements:
 
-- Train/use a project tokenizer with base vocab size `32768`.
-- For diffusion runs, add one extra diffusion mask token, so diffusion `vocab_size = 32768 + 1 = 32769`.
+- Train/use the active project tokenizer with base vocab size `8192`.
+- For diffusion runs, add one extra diffusion mask token, so diffusion `vocab_size = 8192 + 1 = 8193` and mask token id is `8192`.
 - Produce deterministic train/validation splits.
 - Store artifacts in a predictable cache or repo-configured data directory.
 - Integrate with JAX training without forcing the PyTorch trainer abstractions into JAX.
@@ -110,7 +110,7 @@ Use a structured config tree, for example:
 
 ```text
 jax/configs/
-  data/climbmix_32768.yaml
+  data/climbmix_8192.yaml
   model/gpt_small_70m.yaml
   optimizer/normuon_adamw.yaml
   schedule/ws_100_5k.yaml
@@ -182,13 +182,11 @@ n_heads = 12
 n_kv_heads = None unless explicitly fixed otherwise
 ```
 
-That original config's old intervention bundle is QK-norm + value residual + layernorm/depth scaling. Attention gating and weight tying exist in larger/final configs, so include them only if the user confirms they belong in the small GPT sanity bundle.
+For the current AR matrix, the old intervention bundle is confirmed as QK-norm + value residual + layernorm/depth scaling + per-head attention gating. Weight tying is on by default across all AR runs, not treated as an ablation axis.
 
-Please confirm whether this is the complete "old intervention" set before running the final matrix.
+### Value Embedding Definition
 
-### Value Embedding Options
-
-Use these formulas to decide what "value embeddings" should mean before implementation.
+Use only the combined value-residual plus token value-embedding path below.
 
 Let `h_l` be the normalized layer input, `ids` the token ids, and:
 
@@ -198,35 +196,12 @@ K_l = h_l W_K_l
 V_l = h_l W_V_l
 ```
 
-Option A: no value embedding, current ordinary attention value path.
-
-```text
-V_attn_l = V_l
-Y_l = Attention(Q_l, K_l, V_attn_l)
-```
-
-Option B: existing sample-efficient GPT value residual.
-
-```text
-V_first = raw value stream returned by the first layer, before any token value-embedding addition
-V_attn_l = s_l * (a_l * V_l + b_l * V_first) / sqrt(a_l^2 + b_l^2 + eps)
-```
-
-Initialization in the PyTorch/JAX port is `a_l=1`, `b_l=0`, `s_l=1`, so this starts as a no-op.
-
-Option C: Karpathy-style token value embeddings.
-
-For selected layers, usually alternating layers with the last layer included:
+For selected layers, use the Karpathy-style layer placement unless profiling or ablations say otherwise: alternating layers with the final layer always included.
 
 ```text
 E_l(ids) in R[B, T, n_kv_heads, head_dim]
 g_l(h_l) = 2 * sigmoid(h_l[..., :gate_channels] W_gate_l)
-V_attn_l = V_l + g_l(h_l)[..., None] * E_l(ids)
 ```
-
-This adds a token-conditioned value vector directly into the attention value stream. Gate weights are initialized to zero, so `g_l = 1` at init; the path is controlled mostly by the value-embedding initialization scale.
-
-Option D: chosen combined value-residual plus token value-embedding path.
 
 Normalize the value-residual mixture before adding token value embeddings:
 
@@ -237,7 +212,7 @@ V_attn_l = V_res_l + gamma_ve_l * g_l(h_l)[..., None] * E_l(ids)
 Y_l = Attention(Q_l, K_l, V_attn_l)
 ```
 
-This is the default value-embedding ablation for this plan. It isolates the question "does adding token value embeddings help on top of the existing old-intervention recipe?" while preserving the existing value-residual normalization behavior.
+This is the only value-embedding ablation for this plan. It isolates the question "does adding token value embeddings help on top of the existing old-intervention recipe?" while preserving the existing value-residual normalization behavior.
 
 Implementation details:
 
@@ -246,7 +221,7 @@ Implementation details:
 - Add token value embeddings after that normalization. Do not include `E_1(ids)` inside the value-residual anchor unless running a separate explicit ablation.
 - Initialize value residual as before: `a_l=1`, `b_l=0`, `s_l=1`.
 - Expose `gamma_ve_l` or an equivalent global `value_embedding_scale` in config. For exact old-bundle initialization, set it to `0`; for a more literal Karpathy-style run, set it to `1` and control the path mostly through the value-embedding initialization scale.
-- Use the Karpathy-style layer placement unless profiling or ablations say otherwise: alternating layers with the final layer always included.
+- Gate weights are initialized to zero, so `g_l = 1` at init; the path is controlled mostly by `value_embedding_scale` and the value-embedding initialization scale.
 
 ## Non-muP Initialization Research Note
 
@@ -343,7 +318,7 @@ Run exactly four GPT/AR runs unless profiling reveals a serious flaw:
 
 1. Baseline: old architecture interventions off, NorMuon+AdamW on.
 2. Old intervention bundle for the fixed small GPT architecture. For `gpt_small_faster`, this is at least QK-norm + value residual + layernorm/depth scaling.
-3. Add value embeddings: start from the old intervention bundle and use Option D above, i.e. normalize the value-residual mixture first, then add token value embeddings. Keep value embeddings only if they improve.
+3. Add value embeddings: start from the old intervention bundle and use the value-embedding definition above, i.e. normalize the value-residual mixture first, then add token value embeddings. Keep value embeddings only if they improve.
 4. Try non-muP init: start from the current best of runs 2-3 and switch only the initialization mode.
 
 Each of these four configurations needs an LR sweep under the 100-warmup + 5k-constant schedule. Compare each config by its best LR run, while keeping all LR sweep results logged.
@@ -406,7 +381,7 @@ Part 1 is done when:
 
 1. JAX AR baseline is parity-checked against PyTorch and benchmarked on one A100.
 2. JAX AR baseline is at least as efficient as PyTorch for the chosen experimental regime, or any remaining gap is profiled and justified.
-3. Data preparation and loading for ClimbMix with vocab size 32768 are reproducible.
+3. Data preparation and loading for ClimbMix with vocab size 8192 are reproducible.
 4. NorMuon+AdamW is the default optimizer in JAX.
 5. All planned run configs are written before the first real sweep.
 6. Value embeddings and initialization mode are config-controlled.
@@ -414,7 +389,8 @@ Part 1 is done when:
 8. The selected AR and diffusion ablation matrix has been run or is runnable with clear commands.
 9. Results are logged in a way that supports choosing the final architecture plus optimizer recipe for LDMs.
 
-## Questions for the User
+## Current Operational Choices
 
-1. Where should large data artifacts live on the A100 VM: default user cache, project-local path, or a mounted volume?
-2. What W&B entity/project should be used?
+- Do not worry about persistent volume setup for now; local data/cache paths on the A100 VM are acceptable during bring-up.
+- Do not rely on git automation in the agent workflow; the user will handle git separately.
+- Use W&B when available for real sweeps, but local JSONL logs and config files must be sufficient to inspect runs if W&B is not configured.

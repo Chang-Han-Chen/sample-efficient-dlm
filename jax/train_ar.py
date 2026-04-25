@@ -42,18 +42,30 @@ from training.step import (
 
 
 def parse_args():
-    p = argparse.ArgumentParser()
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=Path, default=None)
+    pre_args, _ = pre.parse_known_args()
+
+    p = argparse.ArgumentParser(parents=[pre])
     p.add_argument("--objective", "--model", choices=("ar", "mdlm", "bd3lm"), default="ar")
     p.add_argument("--train-path", type=str, default=None)
     p.add_argument("--eval-path", type=str, default=None)
     p.add_argument("--synthetic", action="store_true")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--run-name", type=str, default=None)
+    p.add_argument("--output-dir", type=Path, default=None)
+    p.add_argument("--no-wandb", dest="wandb", action="store_false", help=argparse.SUPPRESS)
+    p.set_defaults(wandb=True)
+    p.add_argument("--wandb-entity", type=str, default="y38283929-uc-berkeley-electrical-engineering-computer-sc")
+    p.add_argument("--wandb-project", type=str, default="sample-efficient-dlm")
+    p.add_argument("--wandb-group", type=str, default=None)
+    p.add_argument("--wandb-tags", nargs="*", default=None)
     p.add_argument("--max-steps", type=int, default=50)
     p.add_argument("--warmup-steps", type=int, default=100)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--grad-accum-steps", type=int, default=1)
     p.add_argument("--context-length", type=int, default=256)
-    p.add_argument("--vocab-size", type=int, default=32768)
+    p.add_argument("--vocab-size", type=int, default=8192)
     p.add_argument("--mask-token-id", type=int, default=None)
     p.add_argument("--diffusion-steps", type=int, default=100)
     p.add_argument("--t-min", type=float, default=0.45)
@@ -68,6 +80,7 @@ def parse_args():
     p.add_argument("--n-heads", type=int, default=12)
     p.add_argument("--n-kv-heads", type=int, default=None)
     p.add_argument("--dtype", choices=("float32", "bfloat16"), default="bfloat16")
+    p.add_argument("--init-mode", choices=("mup", "hidden_dim"), default="mup")
     p.add_argument("--attention-impl", choices=("xla", "cudnn"), default=None)
     p.add_argument("--disable-qkv-fusion", action="store_true")
     p.add_argument("--disable-swiglu-fusion", action="store_true")
@@ -81,10 +94,20 @@ def parse_args():
     p.add_argument("--no-weight-tying", dest="weight_tying", action="store_false")
     p.set_defaults(weight_tying=True)
     p.add_argument("--grad-checkpoint-layers", type=int, default=0)
-    p.add_argument("--adam-lr", type=float, default=7e-3)
-    p.add_argument("--muon-lr", type=float, default=1.5e-2)
+    p.add_argument("--adam-lr", type=float, default=None, help=argparse.SUPPRESS)
+    p.add_argument("--table-adam-lr", type=float, default=0.6)
+    p.add_argument("--scalar-adam-lr", type=float, default=5e-3)
+    p.add_argument("--muon-lr", type=float, default=4e-2)
+    p.add_argument("--lr-mult", type=float, default=1.0)
     p.add_argument("--adam-wd", type=float, default=0.0)
-    p.add_argument("--muon-wd", type=float, default=1e-4)
+    p.add_argument("--muon-wd", type=float, default=0.2)
+    p.add_argument("--adam-beta1", type=float, default=0.8)
+    p.add_argument("--adam-beta2", type=float, default=0.95)
+    p.add_argument("--adam-eps", type=float, default=1e-10)
+    p.add_argument("--muon-beta2", type=float, default=0.95)
+    p.add_argument("--muon-momentum", type=float, default=0.95)
+    p.add_argument("--momentum-warmup-steps", type=int, default=300)
+    p.add_argument("--momentum-warmup-start", type=float, default=0.85)
     p.add_argument("--z-loss-weight", type=float, default=1e-4)
     p.add_argument("--loss-impl", choices=("full", "chunked"), default="full")
     p.add_argument("--logit-chunk-size", type=int, default=1024)
@@ -95,6 +118,34 @@ def parse_args():
     p.add_argument("--log-jsonl", type=Path, default=None)
     p.add_argument("--measure-start-step", type=int, default=2)
     p.add_argument("--peak-flops", type=float, default=312e12)
+    p.add_argument(
+        "--compilation-cache-dir",
+        type=Path,
+        default=Path(os.environ.get("JAX_COMPILATION_CACHE_DIR", "/tmp/sample_efficient_gpt_jax_cache")),
+    )
+    p.add_argument("--disable-compilation-cache", action="store_true")
+    p.add_argument("--explain-cache-misses", action="store_true")
+
+    if pre_args.config is not None:
+        import yaml
+
+        with pre_args.config.open() as fh:
+            config_doc = yaml.safe_load(fh) or {}
+        train_args = config_doc.get("train_args")
+        if train_args is None:
+            raise ValueError(f"{pre_args.config} must contain a top-level train_args mapping")
+        if not isinstance(train_args, dict):
+            raise TypeError(f"{pre_args.config}: train_args must be a mapping")
+        valid_dests = {action.dest for action in p._actions}
+        unknown = sorted(set(train_args) - valid_dests)
+        if unknown:
+            raise ValueError(f"{pre_args.config}: unknown train_args keys: {unknown}")
+        path_keys = {"log_jsonl", "compilation_cache_dir", "output_dir"}
+        defaults = {
+            key: Path(value) if key in path_keys and value is not None else value
+            for key, value in train_args.items()
+        }
+        p.set_defaults(**defaults)
     return p.parse_args()
 
 
@@ -193,6 +244,16 @@ def estimate_training_flops_per_token(
 
 def main():
     args = parse_args()
+    if args.disable_compilation_cache:
+        jax.config.update("jax_enable_compilation_cache", False)
+    else:
+        args.compilation_cache_dir.mkdir(parents=True, exist_ok=True)
+        jax.config.update("jax_enable_compilation_cache", True)
+        jax.config.update("jax_compilation_cache_dir", str(args.compilation_cache_dir))
+        jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
+        jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
+        if args.explain_cache_misses:
+            jax.config.update("jax_explain_cache_misses", True)
     if not args.synthetic and args.train_path is None:
         raise ValueError("Provide --train-path or pass --synthetic for a smoke run")
 
@@ -239,14 +300,24 @@ def main():
         attention_impl=args.attention_impl,
         fuse_qkv=not args.disable_qkv_fusion,
         fuse_swiglu=not args.disable_swiglu_fusion,
+        init_mode=args.init_mode,
         dtype=dtype,
     )
+    table_adam_lr_base = args.table_adam_lr if args.adam_lr is None else args.adam_lr
+    scalar_adam_lr_base = args.scalar_adam_lr if args.adam_lr is None else args.adam_lr
     opt_cfg = NormuonAdamWConfig(
-        adam_lr=args.adam_lr,
-        muon_lr=args.muon_lr,
+        table_adam_lr=table_adam_lr_base * args.lr_mult,
+        scalar_adam_lr=scalar_adam_lr_base * args.lr_mult,
+        muon_lr=args.muon_lr * args.lr_mult,
         adam_weight_decay=args.adam_wd,
         muon_weight_decay=args.muon_wd,
+        adam_betas=(args.adam_beta1, args.adam_beta2),
+        muon_momentum=args.muon_momentum,
+        muon_beta2=args.muon_beta2,
+        adam_eps=args.adam_eps,
         warmup_steps=args.warmup_steps,
+        momentum_warmup_steps=args.momentum_warmup_steps,
+        momentum_warmup_start=args.momentum_warmup_start,
     )
     optimizer = nnx.Optimizer(model, create_normuon_adamw(model, opt_cfg), wrt=nnx.Param)
     trainable_params = count_parameters(model)
@@ -287,51 +358,92 @@ def main():
             seed=args.seed + 1,
         )
 
-    print(
-        "config:",
-        {
-            "objective": args.objective,
-            "steps": args.max_steps,
-            "batch_size": args.batch_size,
-            "grad_accum_steps": args.grad_accum_steps,
-            "context_length": args.context_length,
-            "model_sequence_length": model_sequence_length,
-            "tokens_per_optimizer_step": args.batch_size * args.context_length * args.grad_accum_steps,
-            "base_vocab_size": args.vocab_size,
-            "model_vocab_size": model_vocab_size,
-            "mask_token_id": None if diffusion_cfg is None else diffusion_cfg.mask_token_id,
-            "diffusion_steps": None if diffusion_cfg is None else diffusion_cfg.num_steps,
-            "t_min": None if diffusion_cfg is None else diffusion_cfg.t_min,
-            "t_max": None if diffusion_cfg is None else diffusion_cfg.t_max,
-            "noise_schedule": None if diffusion_cfg is None else diffusion_cfg.noise_schedule,
-            "bd3_block_len": None if diffusion_cfg is None else diffusion_cfg.block_len,
-            "bd3_attention": args.bd3_attention,
-            "dtype": args.dtype,
-            "attention_impl": args.attention_impl,
-            "fuse_qkv": not args.disable_qkv_fusion,
-            "fuse_swiglu": not args.disable_swiglu_fusion,
-            "attn_qknorm": args.attn_qknorm,
-            "attn_val_residual": args.attn_val_residual,
-            "attn_gating": args.attn_gating,
-            "layernorm_scaling": args.layernorm_scaling,
-            "value_embedding": args.value_embedding,
-            "value_embedding_scale": args.value_embedding_scale,
-            "weight_tying": args.weight_tying,
-            "loss_impl": args.loss_impl,
-            "logit_chunk_size": args.logit_chunk_size,
-            "optimizer": "NorMuonCWD+AdamW",
-            "trainable_param_count": trainable_params,
-            "compute_param_count": compute_params,
-            "flops_per_token_estimate": flops_per_token,
-            "peak_flops_denominator": args.peak_flops,
-            "jax_version": jax.__version__,
-            "jaxlib_version": jaxlib.__version__,
-            "overfit_batch": args.overfit_batch,
-            "eval_batches": args.eval_batches,
-            "measure_start_step": args.measure_start_step,
-            "devices": [str(d) for d in jax.devices()],
-        },
-    )
+    resolved_config = {
+        "objective": args.objective,
+        "config": None if args.config is None else str(args.config),
+        "run_name": args.run_name,
+        "output_dir": None if args.output_dir is None else str(args.output_dir),
+        "wandb": args.wandb,
+        "wandb_entity": args.wandb_entity,
+        "wandb_project": args.wandb_project,
+        "wandb_group": args.wandb_group,
+        "wandb_tags": args.wandb_tags,
+        "steps": args.max_steps,
+        "batch_size": args.batch_size,
+        "grad_accum_steps": args.grad_accum_steps,
+        "context_length": args.context_length,
+        "model_sequence_length": model_sequence_length,
+        "tokens_per_optimizer_step": args.batch_size * args.context_length * args.grad_accum_steps,
+        "base_vocab_size": args.vocab_size,
+        "model_vocab_size": model_vocab_size,
+        "mask_token_id": None if diffusion_cfg is None else diffusion_cfg.mask_token_id,
+        "diffusion_steps": None if diffusion_cfg is None else diffusion_cfg.num_steps,
+        "t_min": None if diffusion_cfg is None else diffusion_cfg.t_min,
+        "t_max": None if diffusion_cfg is None else diffusion_cfg.t_max,
+        "noise_schedule": None if diffusion_cfg is None else diffusion_cfg.noise_schedule,
+        "bd3_block_len": None if diffusion_cfg is None else diffusion_cfg.block_len,
+        "bd3_attention": args.bd3_attention,
+        "dtype": args.dtype,
+        "init_mode": args.init_mode,
+        "attention_impl": args.attention_impl,
+        "fuse_qkv": not args.disable_qkv_fusion,
+        "fuse_swiglu": not args.disable_swiglu_fusion,
+        "attn_qknorm": args.attn_qknorm,
+        "attn_val_residual": args.attn_val_residual,
+        "attn_gating": args.attn_gating,
+        "layernorm_scaling": args.layernorm_scaling,
+        "value_embedding": args.value_embedding,
+        "value_embedding_scale": args.value_embedding_scale,
+        "weight_tying": args.weight_tying,
+        "loss_impl": args.loss_impl,
+        "logit_chunk_size": args.logit_chunk_size,
+        "optimizer": "NorMuonCWD+AdamW",
+        "lr_mult": args.lr_mult,
+        "table_adam_lr_base": table_adam_lr_base,
+        "scalar_adam_lr_base": scalar_adam_lr_base,
+        "muon_lr_base": args.muon_lr,
+        "table_adam_lr_peak": opt_cfg.table_adam_lr,
+        "scalar_adam_lr_peak": opt_cfg.scalar_adam_lr,
+        "muon_lr_peak": opt_cfg.muon_lr,
+        "adam_wd": args.adam_wd,
+        "muon_wd": args.muon_wd,
+        "adam_betas": [args.adam_beta1, args.adam_beta2],
+        "adam_eps": args.adam_eps,
+        "muon_momentum": args.muon_momentum,
+        "muon_beta2": args.muon_beta2,
+        "momentum_warmup_steps": args.momentum_warmup_steps,
+        "momentum_warmup_start": args.momentum_warmup_start,
+        "trainable_param_count": trainable_params,
+        "compute_param_count": compute_params,
+        "flops_per_token_estimate": flops_per_token,
+        "peak_flops_denominator": args.peak_flops,
+        "jax_version": jax.__version__,
+        "jaxlib_version": jaxlib.__version__,
+        "overfit_batch": args.overfit_batch,
+        "eval_batches": args.eval_batches,
+        "measure_start_step": args.measure_start_step,
+        "compilation_cache_dir": None if args.disable_compilation_cache else str(args.compilation_cache_dir),
+        "devices": [str(d) for d in jax.devices()],
+    }
+    if args.output_dir is not None:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        with (args.output_dir / "resolved_config.json").open("w") as fh:
+            json.dump(resolved_config, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+    print("config:", resolved_config, flush=True)
+
+    wandb_run = None
+    if args.wandb:
+        import wandb
+
+        wandb_run = wandb.init(
+            entity=args.wandb_entity,
+            project=args.wandb_project,
+            name=args.run_name,
+            group=args.wandb_group,
+            tags=args.wandb_tags,
+            config=resolved_config,
+        )
 
     fixed_batch = None
     if args.overfit_batch:
@@ -356,6 +468,7 @@ def main():
                 "first_row_x": x0[0, : min(16, x0.shape[1])].tolist(),
                 "first_row_y": y0[0, : min(16, y0.shape[1])].tolist(),
             },
+            flush=True,
         )
         if args.objective != "ar" and diffusion_cfg is not None:
             preview_rng = np.random.default_rng(args.seed + 10_000)
@@ -377,6 +490,7 @@ def main():
                     "first_row_target": target_preview[0, : min(24, target_preview.shape[1])].tolist(),
                     "first_row_supervise": supervise_preview[0, : min(24, supervise_preview.shape[1])].astype(int).tolist(),
                 },
+                flush=True,
             )
 
     log_fh = None
@@ -512,14 +626,15 @@ def main():
             if step >= args.measure_start_step:
                 measured_time += elapsed
                 measured_steps += 1
-            adam_lr, muon_lr = learning_rates(jnp.asarray(step, dtype=jnp.int32), opt_cfg)
+            table_adam_lr, scalar_adam_lr, muon_lr = learning_rates(jnp.asarray(step, dtype=jnp.int32), opt_cfg)
             row = {
                 "step": step,
                 "loss": loss_value,
                 "z_loss": float(metrics["z_loss"]),
                 "total_loss": float(metrics["total_loss"]),
                 "grad_norm": float(metrics["grad_norm"]),
-                "adam_lr": float(adam_lr),
+                "table_adam_lr": float(table_adam_lr),
+                "scalar_adam_lr": float(scalar_adam_lr),
                 "muon_lr": float(muon_lr),
                 "data_time_sec": data_time,
                 "step_time_sec": elapsed,
@@ -553,15 +668,22 @@ def main():
                 print(
                     f"step={step:05d} loss={row['loss']:.4f}{eval_text} "
                     f"z={row['z_loss']:.4f}{sup_text} grad_norm={row['grad_norm']:.3f} "
-                    f"adam_lr={row['adam_lr']:.3e} muon_lr={row['muon_lr']:.3e} "
-                    f"data_time={data_time:.4f}s step_time={elapsed:.4f}s"
+                    f"table_lr={row['table_adam_lr']:.3e} "
+                    f"scalar_lr={row['scalar_adam_lr']:.3e} "
+                    f"muon_lr={row['muon_lr']:.3e} "
+                    f"data_time={data_time:.4f}s step_time={elapsed:.4f}s",
+                    flush=True,
                 )
             if log_fh is not None:
                 log_fh.write(json.dumps(row) + "\n")
                 log_fh.flush()
+            if wandb_run is not None:
+                wandb_run.log(row, step=step)
     finally:
         if log_fh is not None:
             log_fh.close()
+        if wandb_run is not None and first_metrics is None:
+            wandb_run.finish()
 
     if first_metrics is None:
         return
@@ -593,8 +715,22 @@ def main():
         f"mfu={mfu * 100:.1f}% "
         f"mfu_peak_tflops={args.peak_flops / 1e12:.0f} "
         f"jax_peak_hbm_gb={peak_hbm_bytes / 1e9:.2f} "
-        f"jax_peak_reserved_gb={peak_reserved_bytes / 1e9:.2f}"
+        f"jax_peak_reserved_gb={peak_reserved_bytes / 1e9:.2f}",
+        flush=True,
     )
+    if wandb_run is not None:
+        wandb_run.summary.update(
+            {
+                "compile_plus_first_step_sec": compile_time,
+                "avg_measured_step_sec": avg_step,
+                "tokens_per_sec": tokens_per_step / avg_step,
+                "est_tflops": achieved_flops / 1e12,
+                "mfu_percent": mfu * 100,
+                "jax_peak_hbm_gb": peak_hbm_bytes / 1e9,
+                "jax_peak_reserved_gb": peak_reserved_bytes / 1e9,
+            }
+        )
+        wandb_run.finish()
 
 
 if __name__ == "__main__":

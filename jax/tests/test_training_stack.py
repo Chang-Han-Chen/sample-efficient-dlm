@@ -39,14 +39,28 @@ def _small_model():
 def test_param_grouping():
     model = _small_model()
     specs = build_param_specs(model)
-    assert specs["embedding"]["weight"].kind == "adamw"
-    assert specs["lm_head"]["weight"].kind == "adamw"
-    assert specs["blocks"][0]["ln1"]["gamma"].kind == "adamw"
+    assert specs["embedding"]["weight"].kind == "adam_table"
+    assert specs["lm_head"]["weight"].kind == "adam_table"
+    assert specs["blocks"][0]["ln1"]["gamma"].kind == "adam_scalar"
     assert specs["blocks"][0]["attn"]["W_q"]["weight"].kind == "muon"
     assert specs["blocks"][0]["attn"]["W_k"]["weight"].kind == "muon"
     assert specs["blocks"][0]["attn"]["W_v"]["weight"].kind == "muon"
     assert specs["blocks"][0]["ffn"]["w_down"]["weight"].kind == "muon"
     assert specs["blocks"][0]["ffn"]["w_up_gate"]["weight"].kind == "muon"
+
+    ve_model = Transformer(
+        nnx.Rngs(1),
+        n_layers=2,
+        vocab_size=32,
+        d_model=64,
+        n_heads=4,
+        d_ff=128,
+        value_embedding=True,
+        dtype=jnp.float32,
+    )
+    ve_specs = build_param_specs(ve_model)
+    assert ve_specs["blocks"][1]["attn"]["value_embedding_table"]["weight"].kind == "adam_table"
+    assert ve_specs["blocks"][1]["attn"]["value_embedding_gate"]["weight"].kind == "muon"
 
 
 def test_normuon_adamw_update_exercises_both_optimizer_paths():
@@ -54,7 +68,8 @@ def test_normuon_adamw_update_exercises_both_optimizer_paths():
     tx = create_normuon_adamw(
         model,
         NormuonAdamWConfig(
-            adam_lr=1e-3,
+            table_adam_lr=1e-3,
+            scalar_adam_lr=1e-3,
             muon_lr=1e-3,
             adam_weight_decay=0.0,
             muon_weight_decay=0.0,
@@ -82,7 +97,8 @@ def test_normuon_adamw_update_exercises_both_optimizer_paths():
 def test_normuon_adamw_train_step_decreases_fixed_batch_loss():
     model = _small_model()
     opt_cfg = NormuonAdamWConfig(
-        adam_lr=1e-3,
+        table_adam_lr=1e-3,
+        scalar_adam_lr=1e-3,
         muon_lr=3e-3,
         muon_weight_decay=0.0,
         warmup_steps=1,
@@ -105,7 +121,8 @@ def test_normuon_adamw_train_step_decreases_fixed_batch_loss():
 def test_gradient_accumulation_train_step_decreases_fixed_batch_loss():
     model = _small_model()
     opt_cfg = NormuonAdamWConfig(
-        adam_lr=1e-3,
+        table_adam_lr=1e-3,
+        scalar_adam_lr=1e-3,
         muon_lr=3e-3,
         muon_weight_decay=0.0,
         warmup_steps=1,

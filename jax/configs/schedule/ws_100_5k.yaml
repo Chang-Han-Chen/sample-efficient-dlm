@@ -1,0 +1,7 @@
+name: ws_100_5k
+scheduler: warmup_stable
+warmup_steps: 100
+constant_steps: 5000
+max_steps: 5100
+decay_steps: 0
+

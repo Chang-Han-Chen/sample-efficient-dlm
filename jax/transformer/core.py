@@ -49,14 +49,16 @@ class Linear(nnx.Module):
         d_in: int,
         d_out: int,
         dtype: jnp.dtype = jnp.float32,
+        init_std: float | None = None,
     ):
-        sigma = 1.0 / jnp.sqrt(d_in)
+        sigma = float(init_std if init_std is not None else 1.0 / jnp.sqrt(d_in))
         self.weight = nnx.Param(
-            _truncated_normal(rngs, (d_out, d_in), float(sigma), dtype)
+            _truncated_normal(rngs, (d_out, d_in), sigma, dtype)
         )
         self.d_in = d_in
         self.d_out = d_out
         self.dtype = dtype
+        self.init_std = sigma
 
     def __call__(self, x: Array) -> Array:
         return x @ self.weight.value.T
@@ -71,14 +73,16 @@ class Embedding(nnx.Module):
         vocab_size: int,
         d_model: int,
         dtype: jnp.dtype = jnp.float32,
+        init_std: float | None = None,
     ):
-        sigma = 1.0 / jnp.sqrt(d_model)
+        sigma = float(init_std if init_std is not None else 1.0 / jnp.sqrt(d_model))
         self.weight = nnx.Param(
-            _truncated_normal(rngs, (vocab_size, d_model), float(sigma), dtype)
+            _truncated_normal(rngs, (vocab_size, d_model), sigma, dtype)
         )
         self.vocab_size = vocab_size
         self.d_model = d_model
         self.dtype = dtype
+        self.init_std = sigma
 
     def __call__(self, token_ids: Int[Array, "b seq"]) -> Float[Array, "b seq d"]:
         return self.weight.value[token_ids]
@@ -169,6 +173,7 @@ class SwiGLU(nnx.Module):
         d_ff: int,
         dtype: jnp.dtype = jnp.float32,
         fuse_up_gate: bool = True,
+        linear_init_std: float | None = None,
     ):
         # Match PyTorch's round-to-64 for hardware alignment.
         d_ff = int(d_ff // 64 * 64)
@@ -176,12 +181,13 @@ class SwiGLU(nnx.Module):
         self.d_ff = d_ff
         self.dtype = dtype
         self.fuse_up_gate = bool(fuse_up_gate)
+        self.linear_init_std = linear_init_std
         if self.fuse_up_gate:
-            self.w_up_gate = Linear(rngs, d_model, 2 * d_ff, dtype)
+            self.w_up_gate = Linear(rngs, d_model, 2 * d_ff, dtype, init_std=linear_init_std)
         else:
-            self.w_up = Linear(rngs, d_model, d_ff, dtype)
-            self.w_gate = Linear(rngs, d_model, d_ff, dtype)
-        self.w_down = Linear(rngs, d_ff, d_model, dtype)
+            self.w_up = Linear(rngs, d_model, d_ff, dtype, init_std=linear_init_std)
+            self.w_gate = Linear(rngs, d_model, d_ff, dtype, init_std=linear_init_std)
+        self.w_down = Linear(rngs, d_ff, d_model, dtype, init_std=linear_init_std)
 
     def __call__(self, x: Array) -> Array:
         if self.fuse_up_gate:
