@@ -118,7 +118,6 @@ jax/configs/
     ar_baseline.yaml
     ar_old_bundle.yaml
     ar_value_embedding.yaml
-    ar_non_mup_init.yaml
     mdlm_*.yaml
     bd3lm_*.yaml
 ```
@@ -154,9 +153,6 @@ The JAX transformer should support:
   - depth/layernorm scaling if retained from the PyTorch code
 - New ablation feature:
   - value embeddings, based on the `karpathy/train.py` implementation unless clarified otherwise.
-- Initialization ablation:
-  - current sample-efficient/muP-ish initialization
-  - non-muP or "variance inversely proportional to hidden dimension" initialization variant
 
 Value embeddings need special care. The intended ablation is now the clean combined version: compute the normalized value-residual mixture first, using the raw first-layer value stream as the residual anchor, and only then add token value embeddings into the attention value stream. Do not cache or reuse a first-layer value stream that already includes value embeddings. This keeps the value-residual channel and token-value-embedding channel disentangled.
 
@@ -223,28 +219,9 @@ Implementation details:
 - Expose `gamma_ve_l` or an equivalent global `value_embedding_scale` in config. For exact old-bundle initialization, set it to `0`; for a more literal Karpathy-style run, set it to `1` and control the path mostly through the value-embedding initialization scale.
 - Gate weights are initialized to zero, so `g_l = 1` at init; the path is controlled mostly by `value_embedding_scale` and the value-embedding initialization scale.
 
-## Non-muP Initialization Research Note
+## Initialization Decision
 
-The user cited a claim from "Pre-training Under Infinite Compute" saying that, when scaling models, Marin changed initialization to have variance inversely proportional to hidden dimension and that this outperformed muP in their framework.
-
-Initial research:
-
-- Marin issue 621 is titled "MuP for scaling laws" and was closed as completed. The final public comment says the conclusion was "not worth it" because their heuristic LR performed well.
-- A Marin issue comment summarizes a CerebrasGPT-style muP recipe involving scaled linear weights, scaled logits, embedding output scaling, `1/d_head` attention scaling, and extra scaling for output projections and FFN down projections.
-- The paper quote should be treated as a hypothesis to test in this codebase, not as settled evidence.
-
-Action for the agent:
-
-1. Read the relevant Marin issue, linked WandB report if accessible, CerebrasGPT recipe, and any code changes in the linked Levanter/Haliax PRs.
-2. Determine what "non-muP init" should mean concretely here.
-3. Compare against the current PyTorch/JAX initialization. Note that the current `Linear` implementation already uses `std = 1 / sqrt(fan_in)`, which gives variance proportional to `1/fan_in`; this may or may not match the intended non-muP variant depending on output projections, embeddings, logits, and residual-path scaling.
-4. Add the initialization mode as a named config option, not a hard-coded replacement.
-
-Useful links:
-
-- https://github.com/marin-community/marin/issues/621
-- https://openreview.net/pdf/e28fd04869f97f7a613d3a543a11d0649727c510.pdf
-- https://arxiv.org/pdf/2304.03208
+Do not ablate non-muP initialization in Part 1. Keep the default sample-efficient GPT initialization as the only experiment path, and do not expose an experiment-level `init_mode` knob. Low-level initializer hooks may remain as implementation details, but configs and launch scripts should not include a non-muP run.
 
 ## Optimizer Plan
 
@@ -314,16 +291,15 @@ Before ablations, profile sequence length and batch shape:
 
 Phase B: GPT/AR sanity matrix
 
-Run exactly four GPT/AR runs unless profiling reveals a serious flaw:
+Run exactly three GPT/AR runs unless profiling reveals a serious flaw:
 
 1. Baseline: old architecture interventions off, NorMuon+AdamW on.
 2. Old intervention bundle for the fixed small GPT architecture. For `gpt_small_faster`, this is at least QK-norm + value residual + layernorm/depth scaling.
 3. Add value embeddings: start from the old intervention bundle and use the value-embedding definition above, i.e. normalize the value-residual mixture first, then add token value embeddings. Keep value embeddings only if they improve.
-4. Try non-muP init: start from the current best of runs 2-3 and switch only the initialization mode.
 
-Each of these four configurations needs an LR sweep under the 100-warmup + 5k-constant schedule. Compare each config by its best LR run, while keeping all LR sweep results logged.
+Each of these three configurations needs an LR sweep under the 100-warmup + 5k-constant schedule. Compare each config by its best LR run, while keeping all LR sweep results logged.
 
-Do not rerun old GPT ablations one by one. They were already done before; this is only a sanity check that the bundled old interventions still beat the baseline in the JAX setup, plus a test of the two new ideas.
+Do not rerun old GPT ablations one by one. They were already done before; this is only a sanity check that the bundled old interventions still beat the baseline in the JAX setup, plus a test of value embeddings.
 
 Phase C: MDLM and BD3LM
 
@@ -366,7 +342,7 @@ Use Weights & Biases for run tracking if available:
 - Log the full config, git status/commit when available, profiler settings, and hardware metadata.
 - Log throughput, MFU, peak memory, compile time, grad accumulation, global grad norm, LR multiplier, and tokens per optimizer step.
 - Store checkpoints locally and upload at least final and best checkpoints as W&B artifacts. Uploading every checkpoint is useful only if artifact storage and bandwidth are acceptable; prefer sparse periodic checkpoints for large sweeps.
-- Use consistent tags/groups: `ar`, `mdlm`, `bd3lm`, `baseline`, `old_bundle`, `value_embedding`, `non_mup_init`, `seq512`, `seq768`, etc.
+- Use consistent tags/groups: `ar`, `mdlm`, `bd3lm`, `baseline`, `old_bundle`, `value_embedding`, `seq512`, `seq768`, etc.
 
 For diffusion:
 
@@ -384,7 +360,7 @@ Part 1 is done when:
 3. Data preparation and loading for ClimbMix with vocab size 8192 are reproducible.
 4. NorMuon+AdamW is the default optimizer in JAX.
 5. All planned run configs are written before the first real sweep.
-6. Value embeddings and initialization mode are config-controlled.
+6. Value embeddings are config-controlled.
 7. MDLM and BD3LM train on the shared JAX backbone.
 8. The selected AR and diffusion ablation matrix has been run or is runnable with clear commands.
 9. Results are logged in a way that supports choosing the final architecture plus optimizer recipe for LDMs.

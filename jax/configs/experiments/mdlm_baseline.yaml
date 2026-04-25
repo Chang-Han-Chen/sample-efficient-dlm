@@ -37,7 +37,6 @@ train_args:
   n_heads: 12
   n_kv_heads: null
   dtype: bfloat16
-  init_mode: mup
   attention_impl: cudnn
   disable_qkv_fusion: false
   disable_swiglu_fusion: false

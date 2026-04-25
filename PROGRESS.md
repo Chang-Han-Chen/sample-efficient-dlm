@@ -7,8 +7,8 @@ profiling, or conclusions change materially.
 ## Current Objective
 
 Run the AR intervention ablation matrix from config files before moving back
-to diffusion. The immediate matrix is baseline, old bundle, old bundle plus
-value embeddings, and non-muP/hidden-dimension initialization.
+to diffusion. The immediate matrix is baseline, old bundle, and old bundle
+plus value embeddings.
 
 ## User Decisions
 
@@ -38,8 +38,8 @@ value embeddings, and non-muP/hidden-dimension initialization.
   then add token value embeddings after the residual mixture.
 - PLAN.md now keeps only this value-embedding definition; the earlier A/B/C
   alternatives were removed.
-- Initialization is config-controlled with `init_mode=mup` for the current
-  PyTorch-compatible path and `init_mode=hidden_dim` for the non-muP ablation.
+- Non-muP initialization is no longer part of the Part 1 ablation matrix; the
+  trainer uses the default PyTorch-compatible initialization path.
 - Attention uses `jax.nn.dot_product_attention`; cuDNN implementation is used
   for A100 profiling when requested.
 - Added diffusion mask helpers for future MDLM/BD3LM work.
@@ -802,9 +802,8 @@ Updated `PLAN.md` and created a concrete config tree under `jax/configs/`:
 - `jax/configs/experiments/ar_baseline.yaml`
 - `jax/configs/experiments/ar_old_bundle.yaml`
 - `jax/configs/experiments/ar_value_embedding.yaml`
-- `jax/configs/experiments/ar_non_mup_init.yaml`
 
-All four AR experiment configs use:
+All three AR experiment configs use:
 
 - `vocab_size=8192`, train/eval paths under `data/climbmix_smoke_8192/tokens/`
 - `seq_len=512`, microbatch `256`, grad accumulation `2`, effective batch
@@ -824,14 +823,10 @@ Raw code defaults were also aligned to vocab8192:
 `train_ar.py --vocab-size`, `prepare_climbmix.py BASE_VOCAB_SIZE`, and
 `DiffusionConfig.mask_token_id`.
 
-Non-muP implementation note:
+Initialization decision:
 
-- Added `init_mode=mup|hidden_dim`.
-- `mup` preserves the current/PyTorch-compatible fan-in initialization.
-- `hidden_dim` sets all linear-layer stds to `1/sqrt(d_model)`, which only
-  differs from fan-in where the input dimension is not `d_model` (notably FFN
-  down projections and small gate projections). Embeddings remain
-  `1/sqrt(d_model)`.
+- Non-muP initialization was dropped from Part 1. There is no experiment-level
+  `init_mode` argument or non-muP run config.
 
 Validation:
 
@@ -1014,3 +1009,109 @@ Why MDLM is slower per step than AR at the same clean sequence length:
     restored step `0`, resumed at step `1`, and saved a new final checkpoint.
   - simulated 2-device CPU pmap checkpoint save passed, and that checkpoint
     restored into a non-pmap trainer smoke.
+
+## Multi-GPU Code Review Fixes
+
+Reviewed the data-parallel path in `jax/training/step.py` and
+`jax/train_ar.py` and landed correctness, eval-memory, and reporting fixes.
+
+Sum/count supervised loss reduction:
+
+- The previous supervised DP/accumulated paths used `pmean` of per-shard
+  per-microbatch *means*, not a global weighted mean. With uneven mask
+  counts across shards (or microbatches), that is mean-of-means, which
+  does not equal `Σ_d sum_CE_d / Σ_d count_d`. Worst-case effect at the
+  configured MDLM/BD3 mask rates is sub-percent on most steps because
+  per-shard counts have low variance, but the bias grows at smaller
+  per-device batches and at eval time, and is the cheapest correctness
+  fix to land permanently.
+- Fix: added `supervised_lm_loss_sums` in `jax/training/loss.py` which
+  returns `(total_sum, {loss_sum, z_loss_sum, valid_count})`. The
+  differentiable scalar is now a sum, not a mean, so each step type can
+  do its own correct reduction. `valid_count` is mask-derived (no param
+  dependency), so differentiating `total_sum = total_mean * valid_count`
+  yields the gradient of the true sum-form loss when `valid_count > 0`,
+  and zero when `valid_count == 0`.
+- Refactored four supervised step functions in `jax/training/step.py`:
+  - `train_step_supervised`: divides grads and metric sums by local
+    `valid_count`.
+  - `train_step_supervised_accumulated`: sums grads and counts across
+    accum microsteps, then divides by the accumulated count.
+  - `train_step_supervised_data_parallel`: `psum`s grads and counts
+    across devices, then divides by the global count.
+  - `train_step_supervised_accumulated_data_parallel`: sums locally over
+    accum microsteps, `psum`s across devices, then divides by the
+    global accumulated count.
+- Type-aware metrics dict: `loss`, `z_loss`, `total_loss` are reported
+  as global weighted means; `supervised_tokens` is reported as the
+  global count (not a per-device mean); `grad_norm` is computed once on
+  the globally-reduced gradients. This replaces the previous blanket
+  `tree_map(pmean)` over the whole metrics dict.
+- The AR step functions (`train_step`, `train_step_data_parallel`,
+  `train_step_accumulated`, `train_step_accumulated_data_parallel`) are
+  unchanged because every shard always has the same valid-token count.
+  If AR ever gets padding/masking, port the same machinery.
+
+Eval batch-size fix (likely 2-GPU OOM trap):
+
+- `mean_eval_loss` was being called with `batch_size=args.batch_size`
+  even when `--data-parallel` was on. Eval runs through a single-device
+  JIT, so a global batch sized to fit only after `num_devices` sharding
+  would OOM in the eval path even though training fits.
+- Fix: `eval_batch_size = per_device_batch_size if args.data_parallel
+  else args.batch_size`. A future improvement is a real
+  `eval_step_data_parallel`, but this lower-risk change closes the
+  2-GPU eval-OOM trap.
+
+Max peak HBM across devices:
+
+- Replaced `jax.devices()[0].memory_stats()` at end of run with a max
+  across `jax.local_devices()[:num_devices]`. Per-device peaks are also
+  captured in `performance_summary["jax_per_device_peaks"]` so any
+  imbalance shows up in logged results instead of being hidden behind a
+  single-device summary.
+
+Data-parallel parity tests:
+
+- Added `jax/tests/test_data_parallel_parity.py` with three checks,
+  designed to run on simulated CPU devices via
+  `XLA_FLAGS=--xla_force_host_platform_device_count=2`:
+  1. `test_supervised_loss_sums_basic_invariants`: end-to-end sanity
+     for the new sum/count helper.
+  2. `test_ar_single_vs_dp_parity`: AR DP on `(2, 4, 16)` sharded batch
+     vs single-device on the equivalent `(8, 16)` global batch produces
+     the same loss, grad norm, and post-update params; optimizer state
+     is bit-identical across devices after the step.
+  3. `test_mdlm_uneven_mask_dp_parity` (load-bearing): MDLM with shard
+     0 supervising ~25% of tokens and shard 1 supervising ~75%
+     reproduces the single-device global weighted mean. Under the old
+     mean-of-means code, this test would fail. It also asserts
+     `supervised_tokens` equals the global supervised-token count, not
+     a per-device average.
+- Loss/grads parity is checked at `atol=1e-5`. Post-update params are
+  checked at `atol=1e-3` because Muon's Newton-Schulz iteration
+  amplifies the floating-point summation-order differences between
+  single-device sums and `psum`/`pmean` aggregations.
+
+Validation:
+
+- `python -m py_compile jax/training/loss.py jax/training/step.py
+  jax/train_ar.py jax/tests/test_data_parallel_parity.py` passed.
+- `XLA_FLAGS=--xla_force_host_platform_device_count=2 JAX_PLATFORMS=cpu
+  python jax/tests/test_data_parallel_parity.py` passed (all 3 tests).
+- `python jax/tests/test_diffusion_stack.py` still passes after the
+  supervised-loss refactor.
+- `python jax/tests/test_training_stack.py` still passes.
+- `python jax/tests/test_parity.py` still passes (PyTorch parity, AR
+  forward path unchanged).
+- `python jax/tests/test_parity_extras.py` still passes.
+
+Open follow-ups:
+
+- DP eval (`eval_step_data_parallel` and supervised counterpart) so the
+  full global batch can be evaluated across devices. Current fix only
+  prevents OOM; it does not restore single-device-batch-size eval
+  throughput on multi-GPU.
+- Confirm post-pmap model state shape on a real 2-GPU box before the
+  first DP run, since the CPU smokes do not exercise eval immediately
+  after a DP step.

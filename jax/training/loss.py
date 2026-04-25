@@ -361,6 +361,84 @@ def supervised_lm_loss(
     return total, metrics
 
 
+def supervised_lm_loss_sums(
+    model,
+    inputs: Array,
+    targets: Array,
+    supervise_mask: Array | None = None,
+    *,
+    token_positions: Array | None = None,
+    attention_mask: Array | None = None,
+    is_causal: bool | None = None,
+    output_length: int | None = None,
+    bd3_block_len: int | None = None,
+    z_loss_weight: float = 1e-4,
+    ignore_index: int | None = None,
+    loss_impl: str = "full",
+    logit_chunk_size: int = 1024,
+) -> tuple[Array, dict[str, Array]]:
+    """Sum/count variant of ``supervised_lm_loss``.
+
+    Returns ``(total_sum, metrics_sums)`` where ``total_sum`` is the sum of
+    CE + ``z_loss_weight * z_loss`` aggregated over all supervised tokens in
+    this microbatch (a sum, not a mean). The metrics dict contains the
+    sum-form quantities plus the supervised-token count, so each step type
+    can do its own correct reduction:
+
+    * single device: divide grads by ``valid_count``.
+    * accumulation: sum sums and counts across microsteps, then divide.
+    * DP: ``psum`` sums and counts across devices, then divide.
+    * DP + accumulation: sum locally, then ``psum``, then divide.
+
+    Differentiating ``total_sum`` w.r.t. params yields ``valid_count *
+    grad(total_mean)`` because ``valid_count`` is mask-derived (no param
+    dependency), and the inner mean loss divides by ``max(valid_count, 1)``.
+    For ``valid_count > 0`` this is exactly the gradient of the true
+    sum-form loss; for ``valid_count == 0`` both quantities are zero.
+    """
+    if output_length is not None and supervise_mask is not None:
+        mask_for_count = supervise_mask[:, :output_length]
+    else:
+        mask_for_count = supervise_mask
+    target_slice = targets[:, :output_length] if output_length is not None else targets
+    if mask_for_count is None:
+        if ignore_index is None:
+            valid_count = jnp.asarray(target_slice.size, dtype=jnp.float32)
+        else:
+            valid_count = jnp.sum((target_slice != ignore_index).astype(jnp.float32))
+    else:
+        valid_bool = mask_for_count.astype(bool)
+        if ignore_index is not None:
+            valid_bool = valid_bool & (target_slice != ignore_index)
+        valid_count = jnp.sum(valid_bool.astype(jnp.float32))
+
+    _, mean_metrics = supervised_lm_loss(
+        model,
+        inputs,
+        targets,
+        supervise_mask,
+        token_positions=token_positions,
+        attention_mask=attention_mask,
+        is_causal=is_causal,
+        output_length=output_length,
+        bd3_block_len=bd3_block_len,
+        z_loss_weight=z_loss_weight,
+        ignore_index=ignore_index,
+        loss_impl=loss_impl,
+        logit_chunk_size=logit_chunk_size,
+    )
+    # Mean is loss_sum_internal / max(count, 1). Multiplying by count yields
+    # loss_sum_internal exactly when count > 0 and 0 when count == 0.
+    loss_sum = mean_metrics["loss"] * valid_count
+    z_loss_sum = mean_metrics["z_loss"] * valid_count
+    total_sum = loss_sum + z_loss_weight * z_loss_sum
+    return total_sum, {
+        "loss_sum": loss_sum,
+        "z_loss_sum": z_loss_sum,
+        "valid_count": valid_count,
+    }
+
+
 def ar_loss(
     model,
     inputs: Array,

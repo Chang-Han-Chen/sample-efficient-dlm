@@ -165,19 +165,14 @@ class Transformer(nnx.Module):
         attention_impl: str | None = None,
         fuse_qkv: bool = True,
         fuse_swiglu: bool = True,
-        init_mode: str = "mup",
         dtype: jnp.dtype = jnp.float32,
         weight_tying: bool = False,
         num_grad_checkpoint_layers: int = 0,
     ):
-        if init_mode not in ("mup", "hidden_dim"):
-            raise ValueError("init_mode must be one of 'mup' or 'hidden_dim'")
         self.n_layers = n_layers
         self.num_grad_checkpoint_layers = num_grad_checkpoint_layers
         self.value_embedding = value_embedding
         self.value_embedding_layers = value_embedding_layers
-        self.init_mode = init_mode
-        linear_init_std = d_model**-0.5 if init_mode == "hidden_dim" else None
 
         self.embedding = Embedding(rngs, vocab_size, d_model, dtype=dtype)
         self.blocks = _ModuleList(
@@ -206,14 +201,13 @@ class Transformer(nnx.Module):
                     attention_impl=attention_impl,
                     fuse_qkv=fuse_qkv,
                     fuse_swiglu=fuse_swiglu,
-                    linear_init_std=linear_init_std,
                     dtype=dtype,
                 )
                 for pos in range(1, n_layers + 1)
             ]
         )
         self.final_norm = RMSNorm(rngs, d_model, dtype=dtype)
-        self.lm_head = Linear(rngs, d_model, vocab_size, dtype=dtype, init_std=linear_init_std)
+        self.lm_head = Linear(rngs, d_model, vocab_size, dtype=dtype)
 
         if weight_tying:
             # Both weights are stored (vocab, d_model) so this is shape-safe.

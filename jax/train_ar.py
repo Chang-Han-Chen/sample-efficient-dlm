@@ -101,7 +101,6 @@ def parse_args():
     p.add_argument("--n-heads", type=int, default=12)
     p.add_argument("--n-kv-heads", type=int, default=None)
     p.add_argument("--dtype", choices=("float32", "bfloat16"), default="bfloat16")
-    p.add_argument("--init-mode", choices=("mup", "hidden_dim"), default="mup")
     p.add_argument("--attention-impl", choices=("xla", "cudnn"), default=None)
     p.add_argument("--disable-qkv-fusion", action="store_true")
     p.add_argument("--disable-swiglu-fusion", action="store_true")
@@ -532,7 +531,6 @@ def main():
         attention_impl=args.attention_impl,
         fuse_qkv=not args.disable_qkv_fusion,
         fuse_swiglu=not args.disable_swiglu_fusion,
-        init_mode=args.init_mode,
         dtype=dtype,
     )
     table_adam_lr_base = args.table_adam_lr if args.adam_lr is None else args.adam_lr
@@ -676,7 +674,6 @@ def main():
         "bd3_block_len": None if diffusion_cfg is None else diffusion_cfg.block_len,
         "bd3_attention": args.bd3_attention,
         "dtype": args.dtype,
-        "init_mode": args.init_mode,
         "attention_impl": args.attention_impl,
         "fuse_qkv": not args.disable_qkv_fusion,
         "fuse_swiglu": not args.disable_swiglu_fusion,
@@ -970,11 +967,16 @@ def main():
             if "supervised_tokens" in metrics:
                 row["supervised_tokens"] = float(metrics["supervised_tokens"])
             if eval_dataset is not None and step % args.log_every == 0:
+                # When data-parallel is on, the global batch is sized to fit only
+                # after sharding to ``num_devices``. Eval here runs through a
+                # single-device JIT, so use the per-device shard size to avoid
+                # OOM in the eval path even though training fits.
+                eval_batch_size = per_device_batch_size if args.data_parallel else args.batch_size
                 eval_metrics = mean_eval_loss(
                     model,
                     eval_dataset,
                     batches=args.eval_batches,
-                    batch_size=args.batch_size,
+                    batch_size=eval_batch_size,
                     objective=args.objective,
                     diffusion_cfg=diffusion_cfg,
                     model_context=model_context,
@@ -1067,13 +1069,22 @@ def main():
     flops_per_step = flops_per_token * tokens_per_step
     achieved_flops = flops_per_step / avg_step
     mfu = achieved_flops / args.peak_flops
-    memory_stats = {}
+    # Take the max across devices used by this run. With pure data parallel,
+    # device profiles are similar but not identical (XLA workspace, mask
+    # caches), and reporting only device 0 can hide the actual peak.
+    peak_hbm_bytes = 0
+    peak_reserved_bytes = 0
+    per_device_peaks = []
     try:
-        memory_stats = jax.devices()[0].memory_stats() or {}
+        for d in local_devices[:num_devices]:
+            stats = d.memory_stats() or {}
+            in_use = int(stats.get("peak_bytes_in_use", 0) or 0)
+            reserved = int(stats.get("peak_bytes_reserved", 0) or 0)
+            per_device_peaks.append({"device": str(d), "peak_bytes_in_use": in_use, "peak_bytes_reserved": reserved})
+            peak_hbm_bytes = max(peak_hbm_bytes, in_use)
+            peak_reserved_bytes = max(peak_reserved_bytes, reserved)
     except Exception:
-        memory_stats = {}
-    peak_hbm_bytes = int(memory_stats.get("peak_bytes_in_use", 0) or 0)
-    peak_reserved_bytes = int(memory_stats.get("peak_bytes_reserved", 0) or 0)
+        pass
     performance_summary = {
         "compile_plus_first_step_sec": compile_time,
         "avg_measured_step_sec": avg_step,
@@ -1082,6 +1093,7 @@ def main():
         "mfu_percent": mfu * 100,
         "jax_peak_hbm_gb": peak_hbm_bytes / 1e9,
         "jax_peak_reserved_gb": peak_reserved_bytes / 1e9,
+        "jax_per_device_peaks": per_device_peaks,
     }
     if checkpointing_enabled and args.save_final_checkpoint:
         assert checkpoint_dir is not None

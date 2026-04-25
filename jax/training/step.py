@@ -8,7 +8,12 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from .loss import ar_loss, cross_entropy_with_z_loss, supervised_lm_loss
+from .loss import (
+    ar_loss,
+    cross_entropy_with_z_loss,
+    supervised_lm_loss,
+    supervised_lm_loss_sums,
+)
 from .optimizer import clip_by_global_norm
 
 Array = jax.Array
@@ -48,7 +53,15 @@ def supervised_loss_fn(
     loss_impl: str,
     logit_chunk_size: int,
 ):
-    return supervised_lm_loss(
+    """Sum-form supervised loss used inside ``value_and_grad``.
+
+    Returns ``(total_sum, metrics_sums)``. Each train step variant divides
+    by the appropriate count (local, ``psum``, or accumulated) to recover
+    the global masked-token mean. AR can use this same path because every
+    shard has the same valid-token count, but it currently uses the
+    cheaper ``loss_fn`` mean path.
+    """
+    return supervised_lm_loss_sums(
         model,
         inputs,
         targets,
@@ -62,6 +75,14 @@ def supervised_loss_fn(
         loss_impl=loss_impl,
         logit_chunk_size=logit_chunk_size,
     )
+
+
+def _safe_inv(count: Array) -> Array:
+    return jnp.where(count > 0, 1.0 / jnp.maximum(count, 1.0), 0.0)
+
+
+def _scale_grads(grads, scale: Array):
+    return jax.tree_util.tree_map(lambda g: g * scale, grads)
 
 
 @functools.partial(nnx.jit, static_argnums=(6, 7))
@@ -247,7 +268,7 @@ def train_step_supervised(
     logit_chunk_size: int = 1024,
     bd3_block_len: int | None = None,
 ):
-    (total_loss, metrics), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
+    (total_sum, metrics_sums), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
         model,
         inputs,
         targets,
@@ -261,11 +282,18 @@ def train_step_supervised(
         loss_impl,
         logit_chunk_size,
     )
+    valid_count = metrics_sums["valid_count"]
+    inv = _safe_inv(valid_count)
+    grads = _scale_grads(grads, inv)
     clipped_grads, grad_norm = clip_by_global_norm(grads, max_grad_norm)
     optimizer.update(model, clipped_grads)
-    metrics["total_loss"] = total_loss
-    metrics["grad_norm"] = grad_norm
-    return metrics
+    return {
+        "loss": metrics_sums["loss_sum"] * inv,
+        "z_loss": metrics_sums["z_loss_sum"] * inv,
+        "total_loss": total_sum * inv,
+        "supervised_tokens": valid_count,
+        "grad_norm": grad_norm,
+    }
 
 
 @functools.partial(
@@ -290,7 +318,14 @@ def train_step_supervised_data_parallel(
     logit_chunk_size: int = 1024,
     bd3_block_len: int | None = None,
 ):
-    (total_loss, metrics), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
+    """Data-parallel supervised step with weighted-mean reduction.
+
+    Aggregates per-shard gradient sums via ``psum`` and divides by the
+    global supervised-token count. This matches the gradient of a single
+    masked-token mean over the whole global batch even when shards have
+    different supervised counts (uneven masks across devices).
+    """
+    (total_sum, metrics_sums), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
         model,
         inputs,
         targets,
@@ -304,13 +339,22 @@ def train_step_supervised_data_parallel(
         loss_impl,
         logit_chunk_size,
     )
-    mean_grads = jax.lax.pmean(grads, DATA_AXIS)
-    clipped_grads, grad_norm = clip_by_global_norm(mean_grads, max_grad_norm)
+    summed_grads = jax.lax.psum(grads, DATA_AXIS)
+    global_loss_sum = jax.lax.psum(metrics_sums["loss_sum"], DATA_AXIS)
+    global_z_loss_sum = jax.lax.psum(metrics_sums["z_loss_sum"], DATA_AXIS)
+    global_total_sum = jax.lax.psum(total_sum, DATA_AXIS)
+    global_count = jax.lax.psum(metrics_sums["valid_count"], DATA_AXIS)
+    inv = _safe_inv(global_count)
+    grads = _scale_grads(summed_grads, inv)
+    clipped_grads, grad_norm = clip_by_global_norm(grads, max_grad_norm)
     optimizer.update(model, clipped_grads)
-    metrics = jax.tree_util.tree_map(lambda x: jax.lax.pmean(x, DATA_AXIS), metrics)
-    metrics["total_loss"] = jax.lax.pmean(total_loss, DATA_AXIS)
-    metrics["grad_norm"] = grad_norm
-    return metrics
+    return {
+        "loss": global_loss_sum * inv,
+        "z_loss": global_z_loss_sum * inv,
+        "total_loss": global_total_sum * inv,
+        "supervised_tokens": global_count,
+        "grad_norm": grad_norm,
+    }
 
 
 @functools.partial(nnx.jit, static_argnums=(9, 10, 11, 12, 13))
@@ -330,9 +374,13 @@ def train_step_supervised_accumulated(
     logit_chunk_size: int = 1024,
     bd3_block_len: int | None = None,
 ):
-    """Update once using mean supervised gradients over leading microbatch axis."""
+    """Accumulated supervised update with weighted-mean reduction.
+
+    Sums per-microbatch gradient sums and supervised-token counts across
+    accum microsteps, then divides by the accumulated global count.
+    """
     accum_steps = inputs.shape[0]
-    (total_loss, metrics), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
+    (total_sum, metrics_sums), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
         model,
         inputs[0],
         targets[0],
@@ -347,10 +395,13 @@ def train_step_supervised_accumulated(
         logit_chunk_size,
     )
     summed_grads = grads
-    metric_sums = metrics
+    summed_loss_sum = metrics_sums["loss_sum"]
+    summed_z_loss_sum = metrics_sums["z_loss_sum"]
+    summed_count = metrics_sums["valid_count"]
+    summed_total_sum = total_sum
 
     for i in range(1, accum_steps):
-        (loss_i, metrics_i), grads_i = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
+        (total_sum_i, metrics_i), grads_i = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
             model,
             inputs[i],
             targets[i],
@@ -364,21 +415,23 @@ def train_step_supervised_accumulated(
             loss_impl,
             logit_chunk_size,
         )
-        total_loss = total_loss + loss_i
         summed_grads = jax.tree_util.tree_map(lambda a, b: a + b, summed_grads, grads_i)
-        metric_sums = {
-            k: metric_sums[k] + metrics_i[k]
-            for k in metric_sums
-        }
+        summed_loss_sum = summed_loss_sum + metrics_i["loss_sum"]
+        summed_z_loss_sum = summed_z_loss_sum + metrics_i["z_loss_sum"]
+        summed_count = summed_count + metrics_i["valid_count"]
+        summed_total_sum = summed_total_sum + total_sum_i
 
-    inv = 1.0 / float(accum_steps)
-    mean_grads = jax.tree_util.tree_map(lambda g: g * inv, summed_grads)
-    clipped_grads, grad_norm = clip_by_global_norm(mean_grads, max_grad_norm)
+    inv = _safe_inv(summed_count)
+    grads = _scale_grads(summed_grads, inv)
+    clipped_grads, grad_norm = clip_by_global_norm(grads, max_grad_norm)
     optimizer.update(model, clipped_grads)
-    metrics = {k: v * inv for k, v in metric_sums.items()}
-    metrics["total_loss"] = total_loss * inv
-    metrics["grad_norm"] = grad_norm
-    return metrics
+    return {
+        "loss": summed_loss_sum * inv,
+        "z_loss": summed_z_loss_sum * inv,
+        "total_loss": summed_total_sum * inv,
+        "supervised_tokens": summed_count,
+        "grad_norm": grad_norm,
+    }
 
 
 @functools.partial(
@@ -403,9 +456,15 @@ def train_step_supervised_accumulated_data_parallel(
     logit_chunk_size: int = 1024,
     bd3_block_len: int | None = None,
 ):
-    """Data-parallel supervised step with local gradient accumulation."""
+    """Data-parallel supervised step with local gradient accumulation.
+
+    Sums grads and supervised-token counts locally over accum microsteps,
+    then ``psum``s across devices, then divides by the global accumulated
+    count. Equivalent to a single masked-token mean over the full
+    effective batch (D * A microbatches), correct under uneven masks.
+    """
     accum_steps = inputs.shape[0]
-    (total_loss, metrics), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
+    (total_sum, metrics_sums), grads = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
         model,
         inputs[0],
         targets[0],
@@ -420,10 +479,13 @@ def train_step_supervised_accumulated_data_parallel(
         logit_chunk_size,
     )
     summed_grads = grads
-    metric_sums = metrics
+    summed_loss_sum = metrics_sums["loss_sum"]
+    summed_z_loss_sum = metrics_sums["z_loss_sum"]
+    summed_count = metrics_sums["valid_count"]
+    summed_total_sum = total_sum
 
     for i in range(1, accum_steps):
-        (loss_i, metrics_i), grads_i = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
+        (total_sum_i, metrics_i), grads_i = nnx.value_and_grad(supervised_loss_fn, has_aux=True)(
             model,
             inputs[i],
             targets[i],
@@ -437,22 +499,28 @@ def train_step_supervised_accumulated_data_parallel(
             loss_impl,
             logit_chunk_size,
         )
-        total_loss = total_loss + loss_i
         summed_grads = jax.tree_util.tree_map(lambda a, b: a + b, summed_grads, grads_i)
-        metric_sums = {k: metric_sums[k] + metrics_i[k] for k in metric_sums}
+        summed_loss_sum = summed_loss_sum + metrics_i["loss_sum"]
+        summed_z_loss_sum = summed_z_loss_sum + metrics_i["z_loss_sum"]
+        summed_count = summed_count + metrics_i["valid_count"]
+        summed_total_sum = summed_total_sum + total_sum_i
 
-    inv = 1.0 / float(accum_steps)
-    local_mean_grads = jax.tree_util.tree_map(lambda g: g * inv, summed_grads)
-    mean_grads = jax.lax.pmean(local_mean_grads, DATA_AXIS)
-    clipped_grads, grad_norm = clip_by_global_norm(mean_grads, max_grad_norm)
+    global_grads = jax.lax.psum(summed_grads, DATA_AXIS)
+    global_loss_sum = jax.lax.psum(summed_loss_sum, DATA_AXIS)
+    global_z_loss_sum = jax.lax.psum(summed_z_loss_sum, DATA_AXIS)
+    global_count = jax.lax.psum(summed_count, DATA_AXIS)
+    global_total_sum = jax.lax.psum(summed_total_sum, DATA_AXIS)
+    inv = _safe_inv(global_count)
+    grads = _scale_grads(global_grads, inv)
+    clipped_grads, grad_norm = clip_by_global_norm(grads, max_grad_norm)
     optimizer.update(model, clipped_grads)
-    metrics = {
-        k: jax.lax.pmean(v * inv, DATA_AXIS)
-        for k, v in metric_sums.items()
+    return {
+        "loss": global_loss_sum * inv,
+        "z_loss": global_z_loss_sum * inv,
+        "total_loss": global_total_sum * inv,
+        "supervised_tokens": global_count,
+        "grad_norm": grad_norm,
     }
-    metrics["total_loss"] = jax.lax.pmean(total_loss * inv, DATA_AXIS)
-    metrics["grad_norm"] = grad_norm
-    return metrics
 
 
 @functools.partial(nnx.jit, static_argnums=(3, 4))
