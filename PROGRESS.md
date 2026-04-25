@@ -6,11 +6,10 @@ profiling, or conclusions change materially.
 
 ## Current Objective
 
-Build a JAX AR training stack and transformer backbone that is faithful to the
-PyTorch reference, trains on ClimbMix, and is faster/more memory efficient on a
-single A100. The immediate optimization focus is native JAX/XLA/cuDNN first:
-larger fused matmuls, memory-efficient attention, and then chunked/fused final
-linear cross entropy if logits memory remains the limiter.
+Move from the AR bring-up into diffusion. The next objective is to add MDLM
+and BD3LM training paths on top of the same JAX transformer backbone, matching
+the `baby-dLM/` objective and mask semantics first, then profiling BD3 memory
+and attention behavior on the A100.
 
 ## User Decisions
 
@@ -262,9 +261,339 @@ not yet faster for the fixed effective batch target. It may still matter for
 longer sequence lengths, old-all/diffusion, or shapes where full logits cannot
 fit. Next useful checks are true gradient-accumulation profiles at effective
 batch 512 and/or optimizing the chunked loss implementation.
-2. Profile strict old bundle separately if needed:
-   QK-norm + value residual + layernorm/depth scaling, without gating.
-3. Use longer profile windows once functionality is stable, ideally 50 measured
-   steps after warmup/compile.
-4. Add structured config files before launching real sweeps.
-5. Continue toward PyTorch/JAX training parity on same data order.
+
+## Diffusion Reference Read
+
+Read `PLAN.md` diffusion section and the main `baby-dLM/` references:
+`model_MDLM.py`, `model_bd3lm.py`, `backbone.py`, `block_utils.py`,
+`prepare.py`, `train.py`, `README.md`, `WORKFLOW.md`, and the diffusion tests.
+
+Key semantics to port:
+
+- MDLM batch construction samples one integer timestep per sequence, converts
+  it through the survival-probability schedule, then independently masks each
+  token with probability `1 - a_t`. The model uses unmasked/bidirectional
+  attention. The loss is CE against `x0`, averaged only over masked positions.
+- BD3LM batch construction samples one integer timestep per block, expands
+  the per-block survival probabilities to tokens, masks tokens independently,
+  then trains with a dual stream `x_t || x_0`. The transformer returns logits
+  only for the noisy `x_t` half and applies CE only on masked positions.
+- BD3 train attention mask is the four-quadrant rule:
+  noisy-to-noisy block diagonal, noisy-to-clean strict previous clean blocks,
+  clean-to-noisy disallowed, and clean-to-clean block-causal. Sampling uses
+  the one-stream block-causal mask.
+- When `block_len == seq_len`, `forward_train(xt, x0)` must skip dual-stream
+  concatenation; otherwise the clean stream would leak. This is explicitly
+  tested in `baby-dLM/tests/test_block_diffusion.py`.
+- `baby-dLM` generation is simplified confidence-based progressive unmasking:
+  already revealed tokens are never re-masked, and top-confidence masked
+  positions are committed as the reverse timestep decreases. Training can be
+  implemented before generation.
+- `baby-dLM/README.md` says this is not the full upstream BD3 reverse process;
+  for this repo the first port should match the simplified masked-token CE
+  semantics and BD3 masks, then consult upstream only if attention details are
+  ambiguous or performance forces it.
+
+JAX changes implied:
+
+1. Generalize the AR training stack into objective-specific batch/loss
+   functions for `ar`, `mdlm`, and `bd3lm`.
+2. Add JAX diffusion batch builders that operate on clean `(inputs or x0)`
+   token batches and return `(xt, x0, supervise_mask)`.
+3. Add a masked CE loss path that can consume either full logits or hidden
+   states plus chunked final projection, using the existing chunked CE machinery
+   with `valid_mask=supervise_mask`.
+4. For MDLM, instantiate/use the shared `Transformer` with `is_causal=False`
+   and no attention mask.
+5. For BD3LM, concatenate `xt` and `x0`, provide repeated positions
+   `0..L-1, 0..L-1`, call the shared `Transformer` with `is_causal=False` and
+   the dense BD3 mask for correctness first, then slice logits/hidden states to
+   the noisy half before loss.
+6. Add deterministic JAX tests mirroring `baby-dLM` tests for masking rates,
+   MDLM loss-only-masked positions, BD3 mask exactness, no clean-stream leakage
+   when `block_len == seq_len`, block0 independence from `x0`, block1
+   dependence on prior clean blocks, and chunked/full diffusion-loss parity.
+7. After correctness, profile BD3 attention. Dense boolean masks over length
+   `2L` may force inefficient attention; if XLA/cuDNN cannot handle the mask
+   efficiently, the likely next optimization is a block-aware implementation
+   that avoids materializing disallowed quadrants before considering Pallas.
+
+## Diffusion Implementation Bring-Up
+
+User clarification:
+
+- The diffusion timestep fraction should be clipped to a configured window by
+  default. Current JAX defaults are `t_min=0.45`, `t_max=0.95`, matching the
+  `baby-dLM/train.py` defaults.
+- For BD3LM, default diffusion block length is `128`. In code this is
+  `--bd3-block-len` / `--block-len`, because `block_size` is already used in
+  `baby-dLM` to mean sequence length. If the sequence length is smaller than
+  128 in tiny smoke runs, the trainer clamps the effective block length to the
+  sequence length unless explicitly set smaller.
+- User clarified the intended near-term profiling target is sequence length
+  `512`, while BD3 block length remains `128`.
+
+Implemented:
+
+- Added `jax/training/diffusion.py`:
+  - `DiffusionConfig`
+  - clipped linear/cosine survival schedules
+  - MDLM batch construction: one timestep per sequence, iid token masking
+  - BD3LM batch construction: one timestep per block, expanded to tokens
+  - static transformer call context for AR/MDLM/BD3LM, including repeated
+    `0..L-1, 0..L-1` RoPE positions and the dense BD3 train mask.
+- Extended `jax/training/loss.py`:
+  - `cross_entropy_with_z_loss` now accepts `valid_mask`.
+  - chunked final linear CE now accepts an external supervision mask.
+  - new `supervised_lm_loss` covers AR-style, MDLM, and BD3LM masked CE.
+- Extended `jax/training/step.py`:
+  - added jitted supervised train/eval steps and accumulated supervised steps.
+- Extended `jax/train_ar.py`:
+  - added `--objective/--model ar|mdlm|bd3lm`.
+  - diffusion model vocab defaults to `base_vocab_size + 1`; default mask ID is
+    `base_vocab_size`, so ClimbMix `32768` becomes diffusion vocab `32769` with
+    mask ID `32768`.
+  - MDLM uses bidirectional attention with no mask.
+  - BD3LM uses dense dual-stream masks for correctness first and slices only
+    noisy-stream outputs for loss.
+  - logs `supervised_tokens` for diffusion objectives.
+
+Correctness tests added:
+
+- `jax/tests/test_diffusion_stack.py` checks:
+  - clipped survival schedule values
+  - MDLM masked/unmasked token invariants
+  - BD3 fixed high-t masking behavior
+  - BD3 context repeated positions and dual-stream mask shape
+  - MDLM supervised loss equals manual masked CE
+  - chunked/full diffusion masked CE parity
+  - BD3 single-block mode skips the clean stream
+  - BD3 dual-stream mask prevents clean-target leakage into noisy block 0 while
+    allowing noisy block 1 to depend on prior clean block 0.
+
+Validation run so far:
+
+- `python -m py_compile jax/training/loss.py jax/training/diffusion.py jax/training/step.py jax/train_ar.py jax/tests/test_diffusion_stack.py` passed.
+- `python jax/tests/test_diffusion_stack.py` passed.
+- `python jax/tests/test_training_stack.py` passed.
+- `python jax/tests/test_parity.py` passed after diffusion changes.
+- `python jax/tests/test_parity_extras.py` passed after diffusion changes.
+- Tiny synthetic MDLM train loop passed:
+  `--objective mdlm --batch-size 2 --context-length 16 --vocab-size 32
+  --d-model 32 --d-ff 64 --n-layers 2 --n-heads 4 --overfit-batch`.
+  The preview showed model input shape `(2, 16)`, target shape `(2, 16)`,
+  mask rate `0.75` at eval timestep fraction `0.6` under the clipped default
+  window, and supervised-token counts in the expected range.
+- Tiny synthetic BD3LM train loop passed:
+  `--objective bd3lm --bd3-block-len 4 --batch-size 2 --context-length 16
+  --vocab-size 32 --d-model 32 --d-ff 64 --n-layers 2 --n-heads 4
+  --overfit-batch`.
+  The preview showed model input shape `(2, 32)`, target shape `(2, 16)`,
+  doubled `x_t || x_0` layout, mask rate `0.75`, and supervised-token counts
+  in the expected range.
+- Added `jax/inspect_diffusion.py`, a reusable "vibe test" script that prints
+  schedule values, clean/masked examples, logits statistics, entropy, top-k
+  token IDs, position-logit cosine similarity, mask-token ranks, and a BD3
+  clean-block perturbation check.
+- `python jax/inspect_diffusion.py --seq-len 16 --bd3-block-len 4
+  --batch-size 3 --base-vocab-size 64 --d-model 48 --d-ff 96 --n-layers 2
+  --n-heads 4` passed on CPU. It showed finite logits for MDLM and BD3LM.
+  The BD3 perturbation check was correct: changing clean block 0 caused exactly
+  zero max-logit difference in noisy block 0 and large differences from noisy
+  block 1 onward.
+- Printed attention masks at sequence length 4:
+  - MDLM effective mask is full bidirectional `4x4`.
+  - BD3 with `block_len=4` is the single-block fast path; the trainer skips
+    dual-stream concat and uses full bidirectional `x_t` attention.
+  - BD3 with `block_len=2` has the expected `8x8` dual-stream mask: noisy
+    block 0 sees only noisy block 0; noisy block 1 sees noisy block 1 plus
+    clean block 0; clean stream is block-causal and never attends to noisy.
+- Verified that the actual model uses those masks, not just that the mask
+  arrays look right. Added regression tests that perturb source regions and
+  compare output logits:
+  - MDLM: changing token 3 changes earlier token-0 logits, confirming
+    bidirectional attention behavior.
+  - BD3 `L=4, block_len=2`: changing clean block 0 leaves noisy block 0
+    logits exactly unchanged and changes noisy block 1; changing clean block 1
+    leaves noisy blocks 0 and 1 unchanged; changing noisy block 1 leaves noisy
+    block 0 and the clean stream unchanged; changing noisy block 0 leaves noisy
+    block 1 and the clean stream unchanged.
+  - `python jax/tests/test_diffusion_stack.py` passed after adding these
+    through-model perturbation checks.
+- Tiny ClimbMix GPU smoke runs passed with `nvidia-smi` monitoring:
+  - MDLM: `--train-path data/climbmix_smoke/tokens/train --eval-path
+    data/climbmix_smoke/tokens/val --objective mdlm --batch-size 4
+    --context-length 64 --vocab-size 32768 --d-model 64 --d-ff 128
+    --n-layers 2 --n-heads 4 --dtype bfloat16 --eval-batches 1
+    --overfit-batch --max-steps 3`.
+  - BD3LM: same, with `--objective bd3lm --bd3-block-len 16`.
+  - Both used diffusion vocab `32769` and mask ID `32768`; previews showed
+    plausible masked ClimbMix examples and finite losses/grad norms.
+  - Background `nvidia-smi` peak was only about `975 MiB`, so this validates
+    plumbing and CUDA execution, not performance.
+- Systematically checked noised data fed to the model on a `64 x 512`
+  ClimbMix batch:
+  - Clean batch shape `(64, 512)`, token min/max were in range, and
+    `mask_token_id=32768` did not appear in clean data.
+  - The underlying loader's AR `(x, y)` shift relation was also checked as a
+    loader sanity check, but diffusion objectives ignore `y`: MDLM and BD3LM
+    use the clean `x0 = x` directly as the denoising target with no logit or
+    target shift.
+  - For fixed timesteps, observed mask ratios matched the clipped schedule:
+    `t=1` expected `0.45`, observed `0.4519`; `t=45` expected `0.45`,
+    observed `0.4495`; `t=60` expected `0.60`, observed `0.6001`;
+    `t=95` expected `0.95`, observed `0.9504`; `t=100` expected clipped
+    `0.95`, observed `0.9510`.
+  - These checks passed for both MDLM and BD3LM. For BD3 fixed `t=60`,
+    per-block observed rates with `block_len=128` were
+    `[0.5961, 0.5988, 0.6008, 0.6047]`.
+  - For random-t BD3, first few per-sample block mask rates differed across
+    blocks as expected because BD3 samples one timestep per block.
+- Optimized the BD3 full-loss path: when `output_length` is set for dual-stream
+  BD3, the loss now requests hidden states, slices to the noisy stream, and
+  projects only the supervised half. This avoids materializing clean-stream
+  `(B*T, vocab)` logits. `python jax/tests/test_diffusion_stack.py` and
+  `python jax/tests/test_training_stack.py` passed after the change.
+- Added gradient/optimizer sanity checks:
+  - Diffusion loss/gradients are unchanged when targets are changed only at
+    unsupervised positions, confirming MDLM/BD3 use no shifted target and CE is
+    applied only where `supervise_mask=True`.
+  - Direct NorMuon+AdamW transformation check verifies optimizer state count
+    increments and nonzero updates are produced for Muon matrix params
+    (`W_q`, `W_k`, `W_v`) and AdamW params (`embedding.weight`, RMSNorm gamma).
+  - `python jax/tests/test_diffusion_stack.py` and
+    `python jax/tests/test_training_stack.py` passed with these checks.
+
+## First Diffusion Seq-512 Profiles
+
+First non-toy A100 profiles used the 70M-ish shape:
+`d_model=768`, `d_ff=2048`, `n_layers=8`, `n_heads=12`, bf16, tied embeddings,
+NorMuonCWD+AdamW, ClimbMix smoke tokens, `seq_len=512`, microbatch `8`.
+
+- MDLM, full logits:
+  - `model_sequence_length=512`, `tokens_per_optimizer_step=4096`.
+  - Compile plus first step `40.476s`.
+  - Steady-state avg from step 4: `0.0829s`, `49.4k tok/s`.
+  - Estimated `33.6 TFLOP/s`, `10.8% MFU`.
+  - JAX peak HBM `4.29 GB`.
+- BD3LM, `block_len=128`, dense dual-stream mask, full loss with noisy-stream
+  hidden slice before projection:
+  - `model_sequence_length=1024`, `tokens_per_optimizer_step=4096`.
+  - Compile plus first step `42.719s`.
+  - Steady-state avg from step 4: `0.1251s`, `32.8k tok/s`.
+  - Estimated `47.0 TFLOP/s`, `15.1% MFU`.
+  - JAX peak HBM `9.29 GB`.
+- A shared background `nvidia-smi` monitor observed peak memory about
+  `10723 MiB` across both runs.
+
+Interpretation: dense BD3 at this small batch compiles and runs, but it is
+about `1.5x` slower wall-clock than MDLM at the same clean-token batch because
+the model sequence is doubled and the dense mask path is more expensive. The
+memory increase from MDLM to BD3 is more than 2x by JAX peak HBM at this shape.
+
+## Diffusion Length And Batch Scaling
+
+All numbers here use the 70M-ish shape, bf16, tied embeddings,
+NorMuonCWD+AdamW, ClimbMix smoke tokens, and no old-architecture flags unless
+stated otherwise. Diffusion uses clean sequence length as the token accounting
+unit; BD3 internally doubles the model sequence length with `x_t || x_0`.
+
+Sequence-length sweep at microbatch `8`:
+
+| objective | clean seq len | model seq len | step time | clean tok/s | JAX peak HBM |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| AR | 512 | 512 | `0.0560s` | `73.1k` | `4.38 GB` |
+| MDLM | 512 | 512 | `0.0829s` | `49.4k` | `4.29 GB` |
+| BD3LM | 512 | 1024 | `0.1251s` | `32.8k` | `9.29 GB` |
+| AR | 768 | 768 | `0.0697s` | `88.2k` | `7.06 GB` |
+| MDLM | 768 | 768 | `0.1036s` | `59.3k` | `6.98 GB` |
+| BD3LM | 768 | 1536 | `0.1756s` | `35.0k` | `16.69 GB` |
+| AR | 1024 | 1024 | `0.0850s` | `96.4k` | `9.99 GB` |
+| MDLM | 1024 | 1024 | `0.1152s` | `71.1k` | `9.99 GB` |
+| BD3LM | 1024 | 2048 | `0.2243s` | `36.5k` | `26.93 GB` |
+
+Interpretation: BD3 wall time relative to MDLM worsens with clean sequence
+length (`1.51x`, `1.69x`, `1.95x`), consistent with the doubled model context.
+The memory growth is clearly steeper for BD3, but not the catastrophic `4x`
+attention-score materialization that would show up if every dense attention
+matrix were fully retained at bf16/fp32 scale. Native JAX attention is doing
+something reasonably memory-aware, but the dense dual-stream path is still much
+heavier than MDLM.
+
+Microbatch scaling at clean `seq_len=512`:
+
+| objective | loss impl | microbatch | status | step time | clean tok/s | JAX peak HBM |
+| --- | --- | ---: | --- | ---: | ---: | ---: |
+| MDLM | full | 32 | fit | `0.1573s` | `104k` | `13.49 GB` |
+| MDLM | full | 64 | fit | `0.2483s` | `132k` | `24.99 GB` |
+| MDLM | full | 128 | OOM | allocation `43.22 GiB` | - | - |
+| MDLM | full | 192 | OOM | allocation `47.11 GiB` | - | - |
+| MDLM | chunked, 1k | 128 | fit | `0.4993s` | `131k` | `36.41 GB` |
+| MDLM | chunked, 16k | 192 | OOM | allocation `51.23 GiB` | - | - |
+| BD3LM | full | 32 | fit | `0.3146s` | `52.1k` | `31.79 GB` |
+| BD3LM | chunked, 1k | 32 | fit | `0.3110s` | `52.7k` | `29.49 GB` |
+| BD3LM | full | 64 | OOM | allocation `53.34 GiB` | - | - |
+| BD3LM | chunked, 16k | 64 | OOM | allocation `52.62 GiB` | - | - |
+| BD3LM | chunked, 1k | 64 | OOM | allocation `51.28 GiB` | - | - |
+
+The important comparison is fixed effective batch `512`, because changing the
+microbatch only changes gradient accumulation count. Approximate optimizer-step
+wall times from the measured microsteps:
+
+| objective | loss impl | microbatch | grad accum for 512 | optimizer-step wall time |
+| --- | --- | ---: | ---: | ---: |
+| MDLM | full | 32 | 16 | `2.52s` |
+| MDLM | full | 64 | 8 | `1.99s` |
+| MDLM | chunked, 1k | 128 | 4 | `2.00s` |
+| BD3LM | full | 32 | 16 | `5.03s` |
+| BD3LM | chunked, 1k | 32 | 16 | `4.98s` |
+
+Chunked logits conclusion for training:
+
+- Chunked logits are mathematically correct by tests and can reduce the reported
+  BD3 batch-32 peak from `31.79 GB` to `29.49 GB`.
+- Chunking lets MDLM fit microbatch `128`, but the microstep becomes about `2x`
+  slower, so fixed-effective-batch wall time is essentially tied with MDLM full
+  logits at microbatch `64`.
+- Chunking does not solve BD3 microbatch `64`: full, chunk-16k, and chunk-1k all
+  OOM on the same scale of `~51-53 GiB` temporary allocation.
+- Therefore chunked logits are not currently a useful training optimization for
+  the planned seq512 diffusion runs. They may still be useful for eval or for a
+  future custom fused linear-CE implementation, but the current pure-JAX
+  chunked custom-VJP path is not the bottleneck to optimize next.
+
+Practical batch setting for fixed effective batch `512` at clean `seq_len=512`:
+
+- MDLM: use full logits with microbatch `64`, grad accumulation `8`.
+- BD3LM: use full logits with microbatch `32`, grad accumulation `16`. Chunked
+  logits at the same microbatch is effectively neutral and can be left off for
+  simplicity.
+
+The OOM behavior means a naive linear extrapolation from small-batch peak HBM is
+not reliable. Runs fail when live buffers plus a large XLA temporary/workspace
+exceed 80 GB, even if sampled `nvidia-smi` usage before the allocation is much
+lower. Since chunked logits does not move the BD3 batch-64 OOM, the likely
+next memory target is the dense dual-stream attention/backward path or XLA
+workspace choices, not the final CE logits.
+
+Meaningful next inspections/tests before profiling:
+
+1. Print small MDLM/BD3 logits statistics by position and stream:
+   mean/std/min/max, top-k token IDs, entropy, and pairwise cosine similarity
+   between positions. Look for repeated constant logits, NaNs, or the mask token
+   dominating every position at init.
+2. For BD3, compare logits after changing `x0` block 0:
+   noisy block 0 should be unchanged, noisy block 1 should change, and later
+   blocks should change more strongly.
+3. For MDLM, change an unmasked future token and verify bidirectional logits
+   can change; for AR, the same check should not affect earlier positions.
+4. Sweep fixed timesteps (`t/T` low, mid, high) and print mask rates plus loss
+   denominators to confirm clipping and supervision counts are sane.
+5. Run a tiny fixed-clean-batch overfit for MDLM and BD3LM with random masks:
+   loss should trend down, grad norm should stay finite, and no position should
+   collapse to identical logits across the batch.
+6. Run small ClimbMix batches through MDLM and BD3LM and print decoded clean
+   vs masked examples to catch token-ID or mask-ID mistakes.
+7. Profile BD3 with dense mask at small and medium sequence lengths to see
+   whether `jax.nn.dot_product_attention` is materializing dense attention
+   state before optimizing kernels.

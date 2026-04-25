@@ -49,6 +49,36 @@ def test_param_grouping():
     assert specs["blocks"][0]["ffn"]["w_up_gate"]["weight"].kind == "muon"
 
 
+def test_normuon_adamw_update_exercises_both_optimizer_paths():
+    model = _small_model()
+    tx = create_normuon_adamw(
+        model,
+        NormuonAdamWConfig(
+            adam_lr=1e-3,
+            muon_lr=1e-3,
+            adam_weight_decay=0.0,
+            muon_weight_decay=0.0,
+            scheduler="constant",
+        ),
+    )
+    params_state = nnx.state(model, nnx.Param)
+    params = nnx.as_pure(params_state)
+    opt_state = tx.init(params_state)
+    grads = jax.tree_util.tree_map(lambda p: jnp.ones_like(p) * 0.01, params)
+    updates, new_state = tx.update(grads, opt_state, params)
+    updates_by_path = {
+        ".".join(str(part) for part in path): update
+        for path, update in nnx.to_flat_state(nnx.State(updates))
+    }
+
+    assert int(new_state.count) == int(opt_state.count) + 1
+    assert float(jnp.linalg.norm(updates_by_path["blocks.0.attn.W_q.weight"].astype(jnp.float32))) > 0.0
+    assert float(jnp.linalg.norm(updates_by_path["blocks.0.attn.W_k.weight"].astype(jnp.float32))) > 0.0
+    assert float(jnp.linalg.norm(updates_by_path["blocks.0.attn.W_v.weight"].astype(jnp.float32))) > 0.0
+    assert float(jnp.linalg.norm(updates_by_path["embedding.weight"].astype(jnp.float32))) > 0.0
+    assert float(jnp.linalg.norm(updates_by_path["blocks.0.ln1.gamma"].astype(jnp.float32))) > 0.0
+
+
 def test_normuon_adamw_train_step_decreases_fixed_batch_loss():
     model = _small_model()
     opt_cfg = NormuonAdamWConfig(

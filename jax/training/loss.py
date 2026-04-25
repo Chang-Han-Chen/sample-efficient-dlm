@@ -59,6 +59,7 @@ def cross_entropy_with_z_loss(
     targets: Array,
     *,
     ignore_index: int | None = None,
+    valid_mask: Array | None = None,
     per_token_byte_lengths: Array | None = None,
 ) -> tuple[Array, Array, Array | None]:
     """Mean token CE plus PaLM-style z-loss statistic.
@@ -72,6 +73,7 @@ def cross_entropy_with_z_loss(
         logits,
         targets,
         ignore_index=ignore_index,
+        valid_mask=valid_mask,
         per_token_byte_lengths=per_token_byte_lengths,
     )
     denom = jnp.maximum(valid_count, 1.0)
@@ -86,16 +88,25 @@ def cross_entropy_with_z_loss(
     return loss, z_loss, loss_bpb
 
 
-def _chunk_inputs(hidden: Array, targets: Array, chunk_size: int) -> tuple[Array, Array, Array]:
+def _chunk_inputs(
+    hidden: Array,
+    targets: Array,
+    valid_mask: Array | None,
+    chunk_size: int,
+) -> tuple[Array, Array, Array]:
     flat_hidden = hidden.reshape((-1, hidden.shape[-1]))
     flat_targets = targets.reshape((-1,))
+    if valid_mask is None:
+        flat_valid = jnp.ones(flat_targets.shape, dtype=bool)
+    else:
+        flat_valid = valid_mask.reshape((-1,)).astype(bool)
     n_tokens = flat_targets.shape[0]
     n_chunks = int(math.ceil(n_tokens / int(chunk_size)))
     padded_tokens = n_chunks * int(chunk_size)
     pad_tokens = padded_tokens - n_tokens
     hidden_pad = jnp.pad(flat_hidden, ((0, pad_tokens), (0, 0)))
     targets_pad = jnp.pad(flat_targets, (0, pad_tokens))
-    valid_pad = jnp.arange(padded_tokens) < n_tokens
+    valid_pad = jnp.pad(flat_valid, (0, pad_tokens), constant_values=False)
     return (
         hidden_pad.reshape((n_chunks, int(chunk_size), hidden.shape[-1])),
         targets_pad.reshape((n_chunks, int(chunk_size))),
@@ -107,10 +118,16 @@ def _chunked_linear_ce_forward_impl(
     hidden: Array,
     weight: Array,
     targets: Array,
+    valid_mask: Array | None,
     chunk_size: int,
     ignore_index: int | None,
 ) -> tuple[Array, Array, Array]:
-    hidden_chunks, target_chunks, valid_chunks = _chunk_inputs(hidden, targets, chunk_size)
+    hidden_chunks, target_chunks, valid_chunks = _chunk_inputs(
+        hidden,
+        targets,
+        valid_mask,
+        chunk_size,
+    )
 
     def body(carry, xs):
         loss_sum, z_loss_sum, valid_count = carry
@@ -142,11 +159,12 @@ def _chunked_linear_ce_forward_impl(
     return loss_sum / denom, z_loss_sum / denom, valid_count
 
 
-@functools.partial(jax.custom_vjp, nondiff_argnums=(3, 4))
+@functools.partial(jax.custom_vjp, nondiff_argnums=(4, 5))
 def _chunked_linear_ce_with_z_loss(
     hidden: Array,
     weight: Array,
     targets: Array,
+    valid_mask: Array | None,
     chunk_size: int,
     ignore_index: int | None,
 ) -> tuple[Array, Array]:
@@ -154,27 +172,34 @@ def _chunked_linear_ce_with_z_loss(
         hidden,
         weight,
         targets,
+        valid_mask,
         chunk_size,
         ignore_index,
     )
     return loss, z_loss
 
 
-def _chunked_linear_ce_fwd(hidden, weight, targets, chunk_size, ignore_index):
+def _chunked_linear_ce_fwd(hidden, weight, targets, valid_mask, chunk_size, ignore_index):
     loss, z_loss, valid_count = _chunked_linear_ce_forward_impl(
         hidden,
         weight,
         targets,
+        valid_mask,
         chunk_size,
         ignore_index,
     )
-    return (loss, z_loss), (hidden, weight, targets, valid_count)
+    return (loss, z_loss), (hidden, weight, targets, valid_mask, valid_count)
 
 
 def _chunked_linear_ce_bwd(chunk_size, ignore_index, residuals, cotangents):
-    hidden, weight, targets, valid_count = residuals
+    hidden, weight, targets, valid_mask, valid_count = residuals
     loss_bar, z_loss_bar = cotangents
-    hidden_chunks, target_chunks, valid_chunks = _chunk_inputs(hidden, targets, chunk_size)
+    hidden_chunks, target_chunks, valid_chunks = _chunk_inputs(
+        hidden,
+        targets,
+        valid_mask,
+        chunk_size,
+    )
     denom = jnp.maximum(valid_count, 1.0)
     vocab_size = weight.shape[0]
 
@@ -212,7 +237,7 @@ def _chunked_linear_ce_bwd(chunk_size, ignore_index, residuals, cotangents):
     flat_grad_hidden = grad_hidden_chunks.reshape((-1, hidden.shape[-1]))[: targets.size]
     grad_hidden = flat_grad_hidden.reshape(hidden.shape).astype(hidden.dtype)
     grad_weight = grad_weight.astype(weight.dtype)
-    return grad_hidden, grad_weight, None
+    return grad_hidden, grad_weight, None, None
 
 
 _chunked_linear_ce_with_z_loss.defvjp(
@@ -228,6 +253,7 @@ def linear_cross_entropy_with_z_loss_chunked(
     *,
     chunk_size: int,
     ignore_index: int | None = None,
+    valid_mask: Array | None = None,
 ) -> tuple[Array, Array]:
     """Cross entropy for ``hidden @ weight.T`` without full-logit materialization.
 
@@ -236,13 +262,99 @@ def linear_cross_entropy_with_z_loss_chunked(
     """
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
+    if valid_mask is None:
+        valid_mask = jnp.ones(targets.shape, dtype=bool)
     return _chunked_linear_ce_with_z_loss(
         hidden_states,
         weight,
         targets,
+        valid_mask,
         int(chunk_size),
         ignore_index,
     )
+
+
+def supervised_lm_loss(
+    model,
+    inputs: Array,
+    targets: Array,
+    supervise_mask: Array | None = None,
+    *,
+    token_positions: Array | None = None,
+    attention_mask: Array | None = None,
+    is_causal: bool | None = None,
+    output_length: int | None = None,
+    z_loss_weight: float = 1e-4,
+    ignore_index: int | None = None,
+    loss_impl: str = "full",
+    logit_chunk_size: int = 1024,
+) -> tuple[Array, dict[str, Array]]:
+    """Generic supervised CE over selected token positions.
+
+    This covers AR, MDLM, and BD3LM:
+      * AR passes a full-True supervision mask and causal attention.
+      * MDLM passes the random masked-token positions and no causal mask.
+      * BD3LM can feed a dual stream and set ``output_length`` to the clean
+        sequence length so only noisy-stream outputs are scored.
+    """
+    if output_length is not None:
+        targets = targets[:, :output_length]
+        if supervise_mask is not None:
+            supervise_mask = supervise_mask[:, :output_length]
+
+    if loss_impl == "full":
+        if output_length is not None:
+            hidden = model(
+                inputs,
+                token_positions=token_positions,
+                attention_mask=attention_mask,
+                is_causal=is_causal,
+                return_hidden=True,
+            )[:, :output_length]
+            logits = model.project_logits(hidden)
+        else:
+            logits = model(
+                inputs,
+                token_positions=token_positions,
+                attention_mask=attention_mask,
+                is_causal=is_causal,
+            )
+        loss, z_loss, _ = cross_entropy_with_z_loss(
+            logits,
+            targets,
+            ignore_index=ignore_index,
+            valid_mask=supervise_mask,
+        )
+    elif loss_impl == "chunked":
+        hidden = model(
+            inputs,
+            token_positions=token_positions,
+            attention_mask=attention_mask,
+            is_causal=is_causal,
+            return_hidden=True,
+        )
+        if output_length is not None:
+            hidden = hidden[:, :output_length]
+        loss, z_loss = linear_cross_entropy_with_z_loss_chunked(
+            hidden,
+            model.lm_head.weight.value,
+            targets,
+            chunk_size=logit_chunk_size,
+            ignore_index=ignore_index,
+            valid_mask=supervise_mask,
+        )
+    else:
+        raise ValueError("loss_impl must be one of 'full' or 'chunked'")
+
+    total = loss + z_loss_weight * z_loss
+    metrics = {
+        "loss": loss,
+        "z_loss": z_loss,
+        "total_loss": total,
+    }
+    if supervise_mask is not None:
+        metrics["supervised_tokens"] = jnp.sum(supervise_mask.astype(jnp.float32))
+    return total, metrics
 
 
 def ar_loss(

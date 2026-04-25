@@ -24,12 +24,26 @@ from flax import nnx
 
 from transformer.transformer import Transformer
 from training.data import MemoryMappedTokenDataset
+from training.diffusion import (
+    DiffusionConfig,
+    eval_t_step_from_frac,
+    make_model_context,
+    prepare_diffusion_training_batch,
+)
 from training.optimizer import NormuonAdamWConfig, create_normuon_adamw, learning_rates
-from training.step import eval_step, train_step, train_step_accumulated
+from training.step import (
+    eval_step,
+    eval_step_supervised,
+    train_step,
+    train_step_accumulated,
+    train_step_supervised,
+    train_step_supervised_accumulated,
+)
 
 
 def parse_args():
     p = argparse.ArgumentParser()
+    p.add_argument("--objective", "--model", choices=("ar", "mdlm", "bd3lm"), default="ar")
     p.add_argument("--train-path", type=str, default=None)
     p.add_argument("--eval-path", type=str, default=None)
     p.add_argument("--synthetic", action="store_true")
@@ -40,6 +54,13 @@ def parse_args():
     p.add_argument("--grad-accum-steps", type=int, default=1)
     p.add_argument("--context-length", type=int, default=256)
     p.add_argument("--vocab-size", type=int, default=32768)
+    p.add_argument("--mask-token-id", type=int, default=None)
+    p.add_argument("--diffusion-steps", type=int, default=100)
+    p.add_argument("--t-min", type=float, default=0.45)
+    p.add_argument("--t-max", type=float, default=0.95)
+    p.add_argument("--noise-schedule", choices=("linear", "cosine"), default="linear")
+    p.add_argument("--bd3-block-len", "--block-len", dest="bd3_block_len", type=int, default=128)
+    p.add_argument("--eval-t-frac", type=float, default=0.6)
     p.add_argument("--d-model", type=int, default=768)
     p.add_argument("--d-ff", type=int, default=2048)
     p.add_argument("--n-layers", type=int, default=8)
@@ -92,13 +113,45 @@ def mean_eval_loss(
     *,
     batches: int,
     batch_size: int,
+    objective: str,
+    diffusion_cfg: DiffusionConfig | None,
+    model_context,
+    rng: np.random.Generator,
+    fixed_t_step: int | None,
     loss_impl: str,
     logit_chunk_size: int,
 ) -> dict[str, float]:
     totals = {"loss": 0.0, "z_loss": 0.0}
     for _ in range(batches):
-        inputs, targets = to_device_batch(dataset.get_batch(batch_size))
-        metrics = eval_step(model, inputs, targets, loss_impl, logit_chunk_size)
+        raw_batch = dataset.get_batch(batch_size)
+        if objective == "ar":
+            inputs, targets = to_device_batch(raw_batch)
+            metrics = eval_step(model, inputs, targets, loss_impl, logit_chunk_size)
+        else:
+            if diffusion_cfg is None:
+                raise ValueError("diffusion_cfg is required for diffusion eval")
+            inputs_np, targets_np, supervise_np = prepare_diffusion_training_batch(
+                objective,
+                raw_batch[0],
+                diffusion_cfg,
+                rng,
+                fixed_t_step=fixed_t_step,
+            )
+            inputs = jnp.asarray(inputs_np, dtype=jnp.int32)
+            targets = jnp.asarray(targets_np, dtype=jnp.int32)
+            supervise_mask = jnp.asarray(supervise_np, dtype=bool)
+            metrics = eval_step_supervised(
+                model,
+                inputs,
+                targets,
+                supervise_mask,
+                model_context.token_positions,
+                model_context.attention_mask,
+                model_context.is_causal,
+                model_context.output_length,
+                loss_impl,
+                logit_chunk_size,
+            )
         totals["loss"] += float(jax.block_until_ready(metrics["loss"]))
         totals["z_loss"] += float(metrics["z_loss"])
     return {k: v / batches for k, v in totals.items()}
@@ -142,10 +195,30 @@ def main():
         raise ValueError("Provide --train-path or pass --synthetic for a smoke run")
 
     dtype = jnp.bfloat16 if args.dtype == "bfloat16" else jnp.float32
+    if args.objective == "ar":
+        model_vocab_size = args.vocab_size
+        diffusion_cfg = None
+    else:
+        mask_token_id = args.mask_token_id if args.mask_token_id is not None else args.vocab_size
+        model_vocab_size = max(args.vocab_size + 1, int(mask_token_id) + 1)
+        bd3_block_len = min(int(args.bd3_block_len), int(args.context_length))
+        diffusion_cfg = DiffusionConfig(
+            num_steps=args.diffusion_steps,
+            t_min=args.t_min,
+            t_max=args.t_max,
+            noise_schedule=args.noise_schedule,
+            mask_token_id=int(mask_token_id),
+            block_len=bd3_block_len,
+        )
+    model_context = make_model_context(
+        args.objective,
+        args.context_length,
+        diffusion_cfg,
+    )
     model = Transformer(
         nnx.Rngs(args.seed),
         n_layers=args.n_layers,
-        vocab_size=args.vocab_size,
+        vocab_size=model_vocab_size,
         d_model=args.d_model,
         n_heads=args.n_heads,
         d_ff=args.d_ff,
@@ -159,6 +232,7 @@ def main():
         weight_tying=args.weight_tying,
         num_grad_checkpoint_layers=args.grad_checkpoint_layers,
         max_seq_len=args.context_length,
+        is_causal=(args.objective == "ar"),
         attention_impl=args.attention_impl,
         fuse_qkv=not args.disable_qkv_fusion,
         fuse_swiglu=not args.disable_swiglu_fusion,
@@ -175,17 +249,26 @@ def main():
     trainable_params = count_parameters(model)
     compute_params = estimate_compute_parameters(
         trainable_params,
-        vocab_size=args.vocab_size,
+        vocab_size=model_vocab_size,
         d_model=args.d_model,
         weight_tying=args.weight_tying,
+    )
+    model_sequence_length = (
+        2 * args.context_length
+        if args.objective == "bd3lm"
+        and diffusion_cfg is not None
+        and diffusion_cfg.block_len < args.context_length
+        else args.context_length
     )
     flops_per_token = estimate_training_flops_per_token(
         compute_params=compute_params,
         n_layers=args.n_layers,
         n_heads=args.n_heads,
         d_model=args.d_model,
-        context_length=args.context_length,
+        context_length=model_sequence_length,
     )
+    if model_sequence_length != args.context_length:
+        flops_per_token *= model_sequence_length / args.context_length
 
     rng = np.random.default_rng(args.seed)
     dataset = None if args.synthetic else MemoryMappedTokenDataset(
@@ -204,12 +287,21 @@ def main():
     print(
         "config:",
         {
+            "objective": args.objective,
             "steps": args.max_steps,
             "batch_size": args.batch_size,
             "grad_accum_steps": args.grad_accum_steps,
             "context_length": args.context_length,
+            "model_sequence_length": model_sequence_length,
             "tokens_per_optimizer_step": args.batch_size * args.context_length * args.grad_accum_steps,
-            "vocab_size": args.vocab_size,
+            "base_vocab_size": args.vocab_size,
+            "model_vocab_size": model_vocab_size,
+            "mask_token_id": None if diffusion_cfg is None else diffusion_cfg.mask_token_id,
+            "diffusion_steps": None if diffusion_cfg is None else diffusion_cfg.num_steps,
+            "t_min": None if diffusion_cfg is None else diffusion_cfg.t_min,
+            "t_max": None if diffusion_cfg is None else diffusion_cfg.t_max,
+            "noise_schedule": None if diffusion_cfg is None else diffusion_cfg.noise_schedule,
+            "bd3_block_len": None if diffusion_cfg is None else diffusion_cfg.block_len,
             "dtype": args.dtype,
             "attention_impl": args.attention_impl,
             "fuse_qkv": not args.disable_qkv_fusion,
@@ -261,11 +353,39 @@ def main():
                 "first_row_y": y0[0, : min(16, y0.shape[1])].tolist(),
             },
         )
+        if args.objective != "ar" and diffusion_cfg is not None:
+            preview_rng = np.random.default_rng(args.seed + 10_000)
+            model_in, target_preview, supervise_preview = prepare_diffusion_training_batch(
+                args.objective,
+                x0,
+                diffusion_cfg,
+                preview_rng,
+                fixed_t_step=eval_t_step_from_frac(diffusion_cfg, args.eval_t_frac),
+            )
+            print(
+                "diffusion_overfit_preview:",
+                {
+                    "model_input_shape": tuple(model_in.shape),
+                    "target_shape": tuple(target_preview.shape),
+                    "mask_rate": float(supervise_preview.mean()),
+                    "mask_token_id": diffusion_cfg.mask_token_id,
+                    "first_row_input": model_in[0, : min(24, model_in.shape[1])].tolist(),
+                    "first_row_target": target_preview[0, : min(24, target_preview.shape[1])].tolist(),
+                    "first_row_supervise": supervise_preview[0, : min(24, supervise_preview.shape[1])].astype(int).tolist(),
+                },
+            )
 
     log_fh = None
     if args.log_jsonl is not None:
         args.log_jsonl.parent.mkdir(parents=True, exist_ok=True)
         log_fh = args.log_jsonl.open("w")
+
+    eval_fixed_t_step = (
+        eval_t_step_from_frac(diffusion_cfg, args.eval_t_frac)
+        if diffusion_cfg is not None
+        else None
+    )
+    eval_rng = np.random.default_rng(args.seed + 1_000_003)
 
     compile_start = time.perf_counter()
     first_metrics = None
@@ -288,39 +408,96 @@ def main():
                 else:
                     batch = dataset.get_batch(args.batch_size)
                 batches.append(batch)
-            data_time = time.perf_counter() - data_start
 
-            if args.grad_accum_steps == 1:
-                inputs, targets = to_device_batch(batches[0])
+            if args.objective == "ar":
+                if args.grad_accum_steps == 1:
+                    inputs, targets = to_device_batch(batches[0])
+                else:
+                    inputs_np = np.stack([b[0] for b in batches], axis=0)
+                    targets_np = np.stack([b[1] for b in batches], axis=0)
+                    inputs = jnp.asarray(inputs_np, dtype=jnp.int32)
+                    targets = jnp.asarray(targets_np, dtype=jnp.int32)
+                supervise_mask = None
             else:
-                inputs_np = np.stack([b[0] for b in batches], axis=0)
-                targets_np = np.stack([b[1] for b in batches], axis=0)
+                if diffusion_cfg is None:
+                    raise ValueError("diffusion_cfg is required for diffusion training")
+                prepared = [
+                    prepare_diffusion_training_batch(
+                        args.objective,
+                        b[0],
+                        diffusion_cfg,
+                        rng,
+                    )
+                    for b in batches
+                ]
+                if args.grad_accum_steps == 1:
+                    inputs_np, targets_np, supervise_np = prepared[0]
+                else:
+                    inputs_np = np.stack([p[0] for p in prepared], axis=0)
+                    targets_np = np.stack([p[1] for p in prepared], axis=0)
+                    supervise_np = np.stack([p[2] for p in prepared], axis=0)
                 inputs = jnp.asarray(inputs_np, dtype=jnp.int32)
                 targets = jnp.asarray(targets_np, dtype=jnp.int32)
+                supervise_mask = jnp.asarray(supervise_np, dtype=bool)
+            data_time = time.perf_counter() - data_start
 
             start = time.perf_counter()
-            if args.grad_accum_steps == 1:
-                metrics = train_step(
-                    model,
-                    optimizer,
-                    inputs,
-                    targets,
-                    args.z_loss_weight,
-                    args.max_grad_norm,
-                    args.loss_impl,
-                    args.logit_chunk_size,
-                )
+            if args.objective == "ar":
+                if args.grad_accum_steps == 1:
+                    metrics = train_step(
+                        model,
+                        optimizer,
+                        inputs,
+                        targets,
+                        args.z_loss_weight,
+                        args.max_grad_norm,
+                        args.loss_impl,
+                        args.logit_chunk_size,
+                    )
+                else:
+                    metrics = train_step_accumulated(
+                        model,
+                        optimizer,
+                        inputs,
+                        targets,
+                        args.z_loss_weight,
+                        args.max_grad_norm,
+                        args.loss_impl,
+                        args.logit_chunk_size,
+                    )
             else:
-                metrics = train_step_accumulated(
-                    model,
-                    optimizer,
-                    inputs,
-                    targets,
-                    args.z_loss_weight,
-                    args.max_grad_norm,
-                    args.loss_impl,
-                    args.logit_chunk_size,
-                )
+                if args.grad_accum_steps == 1:
+                    metrics = train_step_supervised(
+                        model,
+                        optimizer,
+                        inputs,
+                        targets,
+                        supervise_mask,
+                        model_context.token_positions,
+                        model_context.attention_mask,
+                        args.z_loss_weight,
+                        args.max_grad_norm,
+                        model_context.is_causal,
+                        model_context.output_length,
+                        args.loss_impl,
+                        args.logit_chunk_size,
+                    )
+                else:
+                    metrics = train_step_supervised_accumulated(
+                        model,
+                        optimizer,
+                        inputs,
+                        targets,
+                        supervise_mask,
+                        model_context.token_positions,
+                        model_context.attention_mask,
+                        args.z_loss_weight,
+                        args.max_grad_norm,
+                        model_context.is_causal,
+                        model_context.output_length,
+                        args.loss_impl,
+                        args.logit_chunk_size,
+                    )
             loss_value = float(jax.block_until_ready(metrics["loss"]))
             elapsed = time.perf_counter() - start
             if first_metrics is None:
@@ -341,12 +518,19 @@ def main():
                 "data_time_sec": data_time,
                 "step_time_sec": elapsed,
             }
+            if "supervised_tokens" in metrics:
+                row["supervised_tokens"] = float(metrics["supervised_tokens"])
             if eval_dataset is not None and step % args.log_every == 0:
                 eval_metrics = mean_eval_loss(
                     model,
                     eval_dataset,
                     batches=args.eval_batches,
                     batch_size=args.batch_size,
+                    objective=args.objective,
+                    diffusion_cfg=diffusion_cfg,
+                    model_context=model_context,
+                    rng=eval_rng,
+                    fixed_t_step=eval_fixed_t_step,
                     loss_impl=args.loss_impl,
                     logit_chunk_size=args.logit_chunk_size,
                 )
@@ -355,9 +539,14 @@ def main():
 
             if step % args.log_every == 0:
                 eval_text = f" eval_loss={row['eval_loss']:.4f}" if "eval_loss" in row else ""
+                sup_text = (
+                    f" supervised={row['supervised_tokens']:.0f}"
+                    if "supervised_tokens" in row
+                    else ""
+                )
                 print(
                     f"step={step:05d} loss={row['loss']:.4f}{eval_text} "
-                    f"z={row['z_loss']:.4f} grad_norm={row['grad_norm']:.3f} "
+                    f"z={row['z_loss']:.4f}{sup_text} grad_norm={row['grad_norm']:.3f} "
                     f"adam_lr={row['adam_lr']:.3e} muon_lr={row['muon_lr']:.3e} "
                     f"data_time={data_time:.4f}s step_time={elapsed:.4f}s"
                 )
