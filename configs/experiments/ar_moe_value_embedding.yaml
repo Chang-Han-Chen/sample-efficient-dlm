@@ -1,0 +1,90 @@
+name: ar_moe_value_embedding
+description: AR no-value-residual value-embedding bundle with colocated token-choice top-1 Switch MoE.
+tags: [ar, moe, old_bundle, value_embedding, no_value_residual, no_value_embedding_gain, seq512, vocab8192]
+base_configs:
+  data: configs/data/climbmix_24x_newtok_8192.yaml
+  model: configs/model/gpt_small_70m.yaml
+  optimizer: configs/optimizer/normuon_adamw.yaml
+  schedule: configs/schedule/ws_100_5k.yaml
+lr_sweep: moe_router_and_global_lr
+effective_batch_size: 512
+train_args:
+  objective: ar
+  train_path: data/climbmix_24x_newtok_8192/tokens/train
+  eval_path: data/climbmix_24x_newtok_8192/tokens/val
+  seed: 42
+  run_name: ar_moe_value_embedding_no_vr_nogain_lr2p0
+  wandb_group: moe_ar_matrix
+  wandb_tags: [ar, moe, value_embedding, no_value_residual, no_value_embedding_gain, seq512, vocab8192]
+  output_dir: runs/moe_matrix/ar_moe_value_embedding_no_vr_nogain_lr2p0
+  max_steps: 5100
+  warmup_steps: 100
+  batch_size: 512
+  grad_accum_steps: 1
+  data_parallel: true
+  num_devices: 2
+  context_length: 512
+  vocab_size: 8192
+  d_model: 768
+  d_ff: 2048
+  n_layers: 8
+  n_heads: 12
+  n_kv_heads: null
+  dtype: bfloat16
+  attention_impl: cudnn
+  disable_qkv_fusion: false
+  disable_swiglu_fusion: false
+  attn_qknorm: true
+  attn_val_residual: false
+  attn_gating: per-head
+  layernorm_scaling: true
+  value_embedding: true
+  value_embedding_layers: alternating
+  value_embedding_scale: 1.0
+  value_embedding_gain: false
+  value_embedding_gain_init: 0.0
+  weight_tying: true
+  moe: true
+  moe_routing: token_choice_switch
+  moe_top_k: 1
+  moe_layers: alternating
+  moe_num_experts: 4
+  moe_expert_d_ff: null
+  moe_capacity_factor: 1.25
+  moe_use_router_prob: true
+  moe_drop_tokens: true
+  moe_router_dtype: float32
+  moe_load_balance_loss_weight: 0.01
+  moe_router_z_loss_weight: 0.001
+  grad_checkpoint_layers: 0
+  table_adam_lr: 0.01
+  scalar_adam_lr: 0.0005
+  router_adam_lr: 0.001
+  muon_lr: 0.04
+  lr_mult: 2.0
+  adam_wd: 0.0
+  router_adam_wd: 0.0
+  muon_wd: 0.0001
+  adam_beta1: 0.95
+  adam_beta2: 0.99
+  router_adam_beta1: 0.9
+  router_adam_beta2: 0.999
+  value_embedding_adam_beta1: 0.95
+  value_embedding_adam_beta2: 0.99
+  adam_eps: 1.0e-8
+  muon_beta2: 0.95
+  muon_momentum: 0.95
+  momentum_warmup_steps: 300
+  momentum_warmup_start: 0.85
+  z_loss_weight: 0.0001
+  max_grad_norm: 1.0
+  loss_impl: full
+  logit_chunk_size: 1024
+  log_every: 50
+  eval_batches: 4
+  measure_start_step: 5
+  peak_flops: 312000000000000.0
+  compilation_cache_dir: /tmp/sample_efficient_gpt_jax_cache
+  disable_compilation_cache: false
+  explain_cache_misses: false
+  log_jsonl: runs/moe_matrix/ar_moe_value_embedding_no_vr_nogain_lr2p0/train.jsonl

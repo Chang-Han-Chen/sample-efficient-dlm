@@ -29,10 +29,13 @@ class NormuonAdamWConfig:
     table_adam_lr: float = 7e-3
     value_embedding_mask_adam_lr: float | None = None
     scalar_adam_lr: float = 7e-3
+    router_adam_lr: float = 1e-3
     muon_lr: float = 1.5e-2
     adam_weight_decay: float = 0.0
+    router_adam_weight_decay: float = 0.0
     muon_weight_decay: float = 1e-4
     adam_betas: tuple[float, float] = (0.95, 0.99)
+    router_adam_betas: tuple[float, float] = (0.9, 0.999)
     value_embedding_adam_betas: tuple[float, float] = (0.95, 0.99)
     muon_momentum: float = 0.95
     muon_beta2: float = 0.95
@@ -78,7 +81,13 @@ def _is_value_embedding_mask_param(path: str) -> bool:
     return path.endswith(".value_embedding_table.split_weight")
 
 
+def _is_router_param(path: str) -> bool:
+    return ".router.weight" in path or path.endswith("router.weight")
+
+
 def _param_kind(path: str, value: Array) -> str:
+    if _is_router_param(path):
+        return "adam_router"
     if _is_table_param(path):
         return "adam_table"
     if _is_value_embedding_table_param(path):
@@ -101,8 +110,8 @@ def build_param_specs(model) -> nnx.State:
     return nnx.from_flat_state(flat, cls=nnx.State)
 
 
-def learning_rates(step: Array, cfg: NormuonAdamWConfig) -> tuple[Array, Array, Array, Array]:
-    """Return table, VE-mask, scalar, and Muon LRs for this optimizer step."""
+def learning_rates(step: Array, cfg: NormuonAdamWConfig) -> tuple[Array, Array, Array, Array, Array]:
+    """Return table, VE-mask, scalar, router, and Muon LRs for this step."""
     step_f = step.astype(jnp.float32)
     warmup = max(int(cfg.warmup_steps), 1)
     if cfg.scheduler == "warmup_stable":
@@ -116,7 +125,13 @@ def learning_rates(step: Array, cfg: NormuonAdamWConfig) -> tuple[Array, Array, 
         if cfg.value_embedding_mask_adam_lr is None
         else cfg.value_embedding_mask_adam_lr
     )
-    return cfg.table_adam_lr * mult, ve_mask_lr * mult, cfg.scalar_adam_lr * mult, cfg.muon_lr * mult
+    return (
+        cfg.table_adam_lr * mult,
+        ve_mask_lr * mult,
+        cfg.scalar_adam_lr * mult,
+        cfg.router_adam_lr * mult,
+        cfg.muon_lr * mult,
+    )
 
 
 def _muon_momentum(step: Array, cfg: NormuonAdamWConfig) -> Array:
@@ -216,23 +231,27 @@ def create_normuon_adamw(model, cfg: NormuonAdamWConfig) -> optax.GradientTransf
         )
 
     def update_fn(grads, state: NormuonAdamWState, params):
-        table_adam_lr, ve_mask_adam_lr, scalar_adam_lr, muon_lr = learning_rates(state.count, cfg)
+        table_adam_lr, ve_mask_adam_lr, scalar_adam_lr, router_adam_lr, muon_lr = learning_rates(state.count, cfg)
         muon_momentum = _muon_momentum(state.count, cfg)
         t = state.count.astype(jnp.float32) + 1.0
 
         def update_leaf(grad, param, spec, adam_m, adam_v, muon_m, muon_second):
-            if spec.kind in ("adam_table", "adam_ve_table", "adam_ve_mask", "adam_scalar"):
+            if spec.kind in ("adam_table", "adam_ve_table", "adam_ve_mask", "adam_scalar", "adam_router"):
                 if spec.kind == "adam_table":
                     adam_lr = table_adam_lr
                 elif spec.kind == "adam_ve_table":
                     adam_lr = table_adam_lr
                 elif spec.kind == "adam_ve_mask":
                     adam_lr = ve_mask_adam_lr
+                elif spec.kind == "adam_router":
+                    adam_lr = router_adam_lr
                 else:
                     adam_lr = scalar_adam_lr
                 beta1, beta2 = (
                     cfg.value_embedding_adam_betas
                     if spec.kind in ("adam_ve_table", "adam_ve_mask")
+                    else cfg.router_adam_betas
+                    if spec.kind == "adam_router"
                     else cfg.adam_betas
                 )
                 new_m = beta1 * adam_m + (1.0 - beta1) * grad
@@ -247,7 +266,12 @@ def create_normuon_adamw(model, cfg: NormuonAdamWConfig) -> optax.GradientTransf
                     posinf=0.0,
                     neginf=0.0,
                 )
-                update = -adam_lr * cfg.adam_weight_decay * param - step_size * direction
+                weight_decay = (
+                    cfg.router_adam_weight_decay
+                    if spec.kind == "adam_router"
+                    else cfg.adam_weight_decay
+                )
+                update = -adam_lr * weight_decay * param - step_size * direction
                 return update.astype(param.dtype), new_m, new_v, muon_m, muon_second
 
             update, new_muon_m, new_muon_second = _normuon_leaf(

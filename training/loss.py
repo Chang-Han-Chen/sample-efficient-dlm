@@ -8,7 +8,43 @@ import math
 import jax
 import jax.numpy as jnp
 
+from transformer.moe import MoEAux, zero_moe_aux
+
 Array = jax.Array
+
+
+def _model_has_moe(model) -> bool:
+    return bool(getattr(model, "moe", False))
+
+
+def _moe_aux_loss(
+    aux: MoEAux,
+    moe_load_balance_loss_weight: float,
+    moe_router_z_loss_weight: float,
+) -> Array:
+    return (
+        moe_load_balance_loss_weight * aux.load_balance_loss
+        + moe_router_z_loss_weight * aux.router_z_loss
+    )
+
+
+def _add_moe_metrics(metrics: dict[str, Array], aux: MoEAux, moe_aux_loss: Array) -> None:
+    metrics.update(
+        {
+            "moe_load_balance_loss": aux.load_balance_loss,
+            "moe_router_z_loss": aux.router_z_loss,
+            "moe_aux_loss": moe_aux_loss,
+            "moe_dropped_fraction": aux.dropped_fraction,
+            "moe_router_entropy": aux.router_entropy,
+            "moe_expert_fraction_min": aux.expert_fraction_min,
+            "moe_expert_fraction_max": aux.expert_fraction_max,
+            "moe_expert_fraction_std": aux.expert_fraction_std,
+            "moe_router_prob_fraction_min": aux.router_prob_fraction_min,
+            "moe_router_prob_fraction_max": aux.router_prob_fraction_max,
+            "moe_router_prob_fraction_std": aux.router_prob_fraction_std,
+            "moe_num_layers": aux.num_moe_layers,
+        }
+    )
 
 
 def _cross_entropy_sums(
@@ -289,6 +325,8 @@ def supervised_lm_loss(
     ignore_index: int | None = None,
     loss_impl: str = "full",
     logit_chunk_size: int = 1024,
+    moe_load_balance_loss_weight: float = 0.0,
+    moe_router_z_loss_weight: float = 0.0,
 ) -> tuple[Array, dict[str, Array]]:
     """Generic supervised CE over selected token positions.
 
@@ -304,24 +342,41 @@ def supervised_lm_loss(
             supervise_mask = supervise_mask[:, :output_length]
 
     if loss_impl == "full":
+        aux = zero_moe_aux()
         if output_length is not None:
-            hidden = model(
-                inputs,
-                token_positions=token_positions,
-                attention_mask=attention_mask,
-                is_causal=is_causal,
-                return_hidden=True,
-                bd3_block_len=bd3_block_len,
-            )[:, :output_length]
+            hidden_out = model(
+                    inputs,
+                    token_positions=token_positions,
+                    attention_mask=attention_mask,
+                    is_causal=is_causal,
+                    return_hidden=True,
+                    bd3_block_len=bd3_block_len,
+                    return_aux=_model_has_moe(model),
+                )
+            if _model_has_moe(model):
+                hidden, aux = hidden_out
+            else:
+                hidden = hidden_out
+            hidden = hidden[:, :output_length]
             logits = model.project_logits(hidden)
         else:
-            logits = model(
-                inputs,
-                token_positions=token_positions,
-                attention_mask=attention_mask,
-                is_causal=is_causal,
-                bd3_block_len=bd3_block_len,
-            )
+            if _model_has_moe(model):
+                logits, aux = model(
+                    inputs,
+                    token_positions=token_positions,
+                    attention_mask=attention_mask,
+                    is_causal=is_causal,
+                    bd3_block_len=bd3_block_len,
+                    return_aux=True,
+                )
+            else:
+                logits = model(
+                    inputs,
+                    token_positions=token_positions,
+                    attention_mask=attention_mask,
+                    is_causal=is_causal,
+                    bd3_block_len=bd3_block_len,
+                )
         loss, z_loss, _ = cross_entropy_with_z_loss(
             logits,
             targets,
@@ -329,14 +384,20 @@ def supervised_lm_loss(
             valid_mask=supervise_mask,
         )
     elif loss_impl == "chunked":
-        hidden = model(
-            inputs,
-            token_positions=token_positions,
-            attention_mask=attention_mask,
-            is_causal=is_causal,
-            return_hidden=True,
-            bd3_block_len=bd3_block_len,
-        )
+        aux = zero_moe_aux()
+        hidden_out = model(
+                inputs,
+                token_positions=token_positions,
+                attention_mask=attention_mask,
+                is_causal=is_causal,
+                return_hidden=True,
+                bd3_block_len=bd3_block_len,
+                return_aux=_model_has_moe(model),
+            )
+        if _model_has_moe(model):
+            hidden, aux = hidden_out
+        else:
+            hidden = hidden_out
         if output_length is not None:
             hidden = hidden[:, :output_length]
         loss, z_loss = linear_cross_entropy_with_z_loss_chunked(
@@ -350,12 +411,18 @@ def supervised_lm_loss(
     else:
         raise ValueError("loss_impl must be one of 'full' or 'chunked'")
 
-    total = loss + z_loss_weight * z_loss
+    moe_aux_loss = _moe_aux_loss(
+        aux,
+        moe_load_balance_loss_weight,
+        moe_router_z_loss_weight,
+    )
+    total = loss + z_loss_weight * z_loss + moe_aux_loss
     metrics = {
         "loss": loss,
         "z_loss": z_loss,
         "total_loss": total,
     }
+    _add_moe_metrics(metrics, aux, moe_aux_loss)
     if supervise_mask is not None:
         metrics["supervised_tokens"] = jnp.sum(supervise_mask.astype(jnp.float32))
     return total, metrics
@@ -376,6 +443,10 @@ def supervised_lm_loss_sums(
     ignore_index: int | None = None,
     loss_impl: str = "full",
     logit_chunk_size: int = 1024,
+    loss_denominator: Array | float | None = None,
+    moe_average_axis: str | None = None,
+    moe_load_balance_loss_weight: float = 0.0,
+    moe_router_z_loss_weight: float = 0.0,
 ) -> tuple[Array, dict[str, Array]]:
     """Sum/count variant of ``supervised_lm_loss``.
 
@@ -423,17 +494,42 @@ def supervised_lm_loss_sums(
         ignore_index=ignore_index,
         loss_impl=loss_impl,
         logit_chunk_size=logit_chunk_size,
+        moe_load_balance_loss_weight=moe_load_balance_loss_weight,
+        moe_router_z_loss_weight=moe_router_z_loss_weight,
     )
     # Mean is loss_sum_internal / max(count, 1). Multiplying by count yields
     # loss_sum_internal exactly when count > 0 and 0 when count == 0.
     loss_sum = mean_metrics["loss"] * valid_count
     z_loss_sum = mean_metrics["z_loss"] * valid_count
-    total_sum = loss_sum + z_loss_weight * z_loss_sum
-    return total_sum, {
+    denom_for_aux = (
+        valid_count
+        if loss_denominator is None
+        else jnp.asarray(loss_denominator, jnp.float32)
+    )
+    moe_load_balance_loss = mean_metrics["moe_load_balance_loss"]
+    moe_router_z_loss = mean_metrics["moe_router_z_loss"]
+    if moe_average_axis is not None:
+        moe_load_balance_loss = jax.lax.pmean(moe_load_balance_loss, moe_average_axis)
+        moe_router_z_loss = jax.lax.pmean(moe_router_z_loss, moe_average_axis)
+    moe_load_balance_loss_sum = moe_load_balance_loss * denom_for_aux
+    moe_router_z_loss_sum = moe_router_z_loss * denom_for_aux
+    moe_aux_loss_sum = (
+        moe_load_balance_loss_weight * moe_load_balance_loss_sum
+        + moe_router_z_loss_weight * moe_router_z_loss_sum
+    )
+    total_sum = loss_sum + z_loss_weight * z_loss_sum + moe_aux_loss_sum
+    metrics = {
         "loss_sum": loss_sum,
         "z_loss_sum": z_loss_sum,
         "valid_count": valid_count,
+        "moe_aux_loss_sum": moe_aux_loss_sum,
+        "moe_load_balance_loss_sum": moe_load_balance_loss_sum,
+        "moe_router_z_loss_sum": moe_router_z_loss_sum,
     }
+    for key, value in mean_metrics.items():
+        if key.startswith("moe_") and key not in metrics:
+            metrics[key] = value
+    return total_sum, metrics
 
 
 def ar_loss(
@@ -446,9 +542,15 @@ def ar_loss(
     per_token_byte_lengths: Array | None = None,
     loss_impl: str = "full",
     logit_chunk_size: int = 1024,
+    moe_load_balance_loss_weight: float = 0.0,
+    moe_router_z_loss_weight: float = 0.0,
 ) -> tuple[Array, dict[str, Array]]:
     if loss_impl == "full":
-        logits = model(inputs)
+        if _model_has_moe(model):
+            logits, aux = model(inputs, return_aux=True)
+        else:
+            logits = model(inputs)
+            aux = zero_moe_aux()
         loss, z_loss, loss_bpb = cross_entropy_with_z_loss(
             logits,
             targets,
@@ -458,7 +560,11 @@ def ar_loss(
     elif loss_impl == "chunked":
         if per_token_byte_lengths is not None:
             raise NotImplementedError("BPB reporting is not implemented for chunked loss yet")
-        hidden = model(inputs, return_hidden=True)
+        if _model_has_moe(model):
+            hidden, aux = model(inputs, return_hidden=True, return_aux=True)
+        else:
+            hidden = model(inputs, return_hidden=True)
+            aux = zero_moe_aux()
         loss, z_loss = linear_cross_entropy_with_z_loss_chunked(
             hidden,
             model.lm_head.weight[...],
@@ -469,12 +575,18 @@ def ar_loss(
         loss_bpb = None
     else:
         raise ValueError("loss_impl must be one of 'full' or 'chunked'")
-    total = loss + z_loss_weight * z_loss
+    moe_aux_loss = _moe_aux_loss(
+        aux,
+        moe_load_balance_loss_weight,
+        moe_router_z_loss_weight,
+    )
+    total = loss + z_loss_weight * z_loss + moe_aux_loss
     metrics = {
         "loss": loss,
         "z_loss": z_loss,
         "total_loss": total,
     }
+    _add_moe_metrics(metrics, aux, moe_aux_loss)
     if loss_bpb is not None:
         metrics["loss_bpb"] = loss_bpb
     return total, metrics

@@ -18,6 +18,7 @@ from flax import nnx
 from jaxtyping import Float, Int
 
 from .core import SwiGLU, RMSNorm, Embedding, Linear, softmax
+from .moe import add_moe_aux, finalize_moe_aux, zero_moe_aux, SwitchMoE
 from .attention import MultiHeadSelfAttention
 
 Array = jax.Array
@@ -33,12 +34,12 @@ except ImportError:          # pragma: no cover - fallback for flax < 0.11
     _ModuleList = list
 
 
-def has_value_embedding_layer(
+def has_layer(
     layer_idx: int,
     n_layers: int,
-    placement: str | Sequence[int] | None = "alternating",
+    placement: str | Sequence[int] | None,
 ) -> bool:
-    """Return whether a 0-indexed layer should receive token value embeddings."""
+    """Return whether a 0-indexed layer is selected by a placement spec."""
     if placement is None:
         return False
     if isinstance(placement, str):
@@ -49,13 +50,33 @@ def has_value_embedding_layer(
             return True
         if placement == "final":
             return layer_idx == n_layers - 1
-        if placement == "alternating":
+        if placement in ("alternating", "alternating_late"):
             return layer_idx % 2 == (n_layers - 1) % 2
+        if placement == "alternating_early":
+            return layer_idx % 2 != (n_layers - 1) % 2
         raise ValueError(
-            "value_embedding_layers must be one of 'alternating', 'all', "
-            "'final', 'none', or a sequence of layer indices"
+            "placement must be one of 'alternating', 'alternating_late', "
+            "'alternating_early', 'all', 'final', 'none', or a sequence of layer indices"
         )
     return layer_idx in set(int(i) for i in placement)
+
+
+def has_value_embedding_layer(
+    layer_idx: int,
+    n_layers: int,
+    placement: str | Sequence[int] | None = "alternating",
+) -> bool:
+    """Return whether a 0-indexed layer should receive token value embeddings."""
+    return has_layer(layer_idx, n_layers, placement)
+
+
+def has_moe_layer(
+    layer_idx: int,
+    n_layers: int,
+    placement: str | Sequence[int] | None = "alternating",
+) -> bool:
+    """Return whether a 0-indexed layer should use an MoE FFN."""
+    return has_layer(layer_idx, n_layers, placement)
 
 
 class Block(nnx.Module):
@@ -86,6 +107,13 @@ class Block(nnx.Module):
         fuse_qkv: bool = True,
         fuse_swiglu: bool = True,
         linear_init_std: float | None = None,
+        moe: bool = False,
+        moe_num_experts: int = 4,
+        moe_expert_d_ff: int | None = None,
+        moe_capacity_factor: float = 1.25,
+        moe_use_router_prob: bool = True,
+        moe_router_dtype: jnp.dtype = jnp.float32,
+        moe_drop_tokens: bool = True,
         dtype: jnp.dtype = jnp.float32,
     ):
         self.ln1 = RMSNorm(rngs, d_model, dtype=dtype, depth_position=depth_position)
@@ -115,14 +143,31 @@ class Block(nnx.Module):
             dtype=dtype,
         )
         self.ln2 = RMSNorm(rngs, d_model, dtype=dtype, depth_position=depth_position)
-        self.ffn = SwiGLU(
-            rngs,
-            d_model,
-            d_ff,
-            dtype=dtype,
-            fuse_up_gate=fuse_swiglu,
-            linear_init_std=linear_init_std,
-        )
+        self.is_moe = bool(moe)
+        if self.is_moe:
+            self.ffn = SwitchMoE(
+                rngs,
+                d_model,
+                d_ff,
+                num_experts=moe_num_experts,
+                expert_d_ff=moe_expert_d_ff,
+                capacity_factor=moe_capacity_factor,
+                use_router_prob=moe_use_router_prob,
+                router_dtype=moe_router_dtype,
+                drop_tokens=moe_drop_tokens,
+                fuse_up_gate=fuse_swiglu,
+                linear_init_std=linear_init_std,
+                dtype=dtype,
+            )
+        else:
+            self.ffn = SwiGLU(
+                rngs,
+                d_model,
+                d_ff,
+                dtype=dtype,
+                fuse_up_gate=fuse_swiglu,
+                linear_init_std=linear_init_std,
+            )
 
     def __call__(
         self,
@@ -133,6 +178,7 @@ class Block(nnx.Module):
         attention_mask: Array | None = None,
         is_causal: bool | None = None,
         bd3_block_len: int | None = None,
+        return_aux: bool = False,
     ) -> tuple[Float[Array, "b seq d"], Float[Array, "b seq kv_h head_dim"]]:
         attn_out, v = self.attn(
             self.ln1(x),
@@ -144,7 +190,15 @@ class Block(nnx.Module):
             bd3_block_len=bd3_block_len,
         )
         x = x + attn_out
-        x = x + self.ffn(self.ln2(x))
+        h = self.ln2(x)
+        if self.is_moe:
+            ffn_out, moe_aux = self.ffn(h)
+        else:
+            ffn_out = self.ffn(h)
+            moe_aux = zero_moe_aux()
+        x = x + ffn_out
+        if return_aux:
+            return x, v, moe_aux
         return x, v
 
 
@@ -180,11 +234,28 @@ class Transformer(nnx.Module):
         dtype: jnp.dtype = jnp.float32,
         weight_tying: bool = False,
         num_grad_checkpoint_layers: int = 0,
+        moe: bool = False,
+        moe_routing: str = "token_choice_switch",
+        moe_top_k: int = 1,
+        moe_layers: str | Sequence[int] | None = "alternating",
+        moe_num_experts: int = 4,
+        moe_expert_d_ff: int | None = None,
+        moe_capacity_factor: float = 1.25,
+        moe_use_router_prob: bool = True,
+        moe_router_dtype: jnp.dtype = jnp.float32,
+        moe_drop_tokens: bool = True,
     ):
         self.n_layers = n_layers
         self.num_grad_checkpoint_layers = num_grad_checkpoint_layers
         self.value_embedding = value_embedding
         self.value_embedding_layers = value_embedding_layers
+        self.moe = bool(moe)
+        self.moe_layers = moe_layers
+        if self.moe:
+            if moe_routing not in ("token_choice_switch", "token_choice_top1_switch_swiglu"):
+                raise ValueError("Only token_choice_switch MoE routing is supported")
+            if int(moe_top_k) != 1:
+                raise ValueError("Only moe_top_k=1 is supported")
 
         self.embedding = Embedding(rngs, vocab_size, d_model, dtype=dtype)
         self.blocks = _ModuleList(
@@ -217,6 +288,16 @@ class Transformer(nnx.Module):
                     attention_impl=attention_impl,
                     fuse_qkv=fuse_qkv,
                     fuse_swiglu=fuse_swiglu,
+                    moe=(
+                        moe
+                        and has_moe_layer(pos - 1, n_layers, moe_layers)
+                    ),
+                    moe_num_experts=moe_num_experts,
+                    moe_expert_d_ff=moe_expert_d_ff,
+                    moe_capacity_factor=moe_capacity_factor,
+                    moe_use_router_prob=moe_use_router_prob,
+                    moe_router_dtype=moe_router_dtype,
+                    moe_drop_tokens=moe_drop_tokens,
                     dtype=dtype,
                 )
                 for pos in range(1, n_layers + 1)
@@ -236,39 +317,70 @@ class Transformer(nnx.Module):
         attention_mask: Array | None = None,
         is_causal: bool | None = None,
         bd3_block_len: int | None = None,
+        return_aux: bool = False,
     ) -> Float[Array, "b seq d"]:
         """Return final normalized hidden states without materializing logits."""
         x = self.embedding(token_ids)
 
         v1 = None
+        moe_aux = zero_moe_aux()
         for i, block in enumerate(self.blocks):
             if i < self.num_grad_checkpoint_layers:
                 # nnx.remat wraps the stateful callable so the forward is
                 # recomputed during the backward pass to save activations.
-                rematted = nnx.remat(block)
-                x, v = rematted(
-                    x,
-                    token_positions,
-                    v1,
-                    token_ids,
-                    attention_mask,
-                    is_causal,
-                    bd3_block_len,
-                )
+                rematted = nnx.remat(block, static_argnums=(7,))
+                if return_aux:
+                    x, v, block_aux = rematted(
+                        x,
+                        token_positions,
+                        v1,
+                        token_ids,
+                        attention_mask,
+                        is_causal,
+                        bd3_block_len,
+                        return_aux,
+                    )
+                    moe_aux = add_moe_aux(moe_aux, block_aux)
+                else:
+                    x, v = rematted(
+                        x,
+                        token_positions,
+                        v1,
+                        token_ids,
+                        attention_mask,
+                        is_causal,
+                        bd3_block_len,
+                    )
             else:
-                x, v = block(
-                    x,
-                    token_positions,
-                    v1,
-                    token_ids,
-                    attention_mask,
-                    is_causal,
-                    bd3_block_len,
-                )
+                if return_aux:
+                    x, v, block_aux = block(
+                        x,
+                        token_positions,
+                        v1,
+                        token_ids,
+                        attention_mask,
+                        is_causal,
+                        bd3_block_len,
+                        return_aux,
+                    )
+                    moe_aux = add_moe_aux(moe_aux, block_aux)
+                else:
+                    x, v = block(
+                        x,
+                        token_positions,
+                        v1,
+                        token_ids,
+                        attention_mask,
+                        is_causal,
+                        bd3_block_len,
+                    )
             if v1 is None:
                 v1 = v
 
-        return self.final_norm(x)
+        hidden = self.final_norm(x)
+        if return_aux:
+            return hidden, finalize_moe_aux(moe_aux)
+        return hidden
 
     def project_logits(
         self,
@@ -285,6 +397,7 @@ class Transformer(nnx.Module):
         is_causal: bool | None = None,
         return_hidden: bool = False,
         bd3_block_len: int | None = None,
+        return_aux: bool = False,
     ) -> Float[Array, "b seq vocab"] | Float[Array, "b seq d"]:
         hidden = self.encode(
             token_ids,
@@ -292,7 +405,16 @@ class Transformer(nnx.Module):
             attention_mask=attention_mask,
             is_causal=is_causal,
             bd3_block_len=bd3_block_len,
+            return_aux=return_aux,
         )
+        aux = None
+        if return_aux:
+            hidden, aux = hidden
         if return_hidden:
+            if return_aux:
+                return hidden, aux
             return hidden
-        return self.project_logits(hidden)
+        logits = self.project_logits(hidden)
+        if return_aux:
+            return logits, aux
+        return logits

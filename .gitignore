@@ -17,15 +17,8 @@ aws/
 **/*.log
 **/*.sh
 **/*.ipynb
-# Local/generated datasets stay out of git, but keep data preparation code.
-/data/*
-!/data/
-!/data/**/
-!/data/**/*.py
-!/data/**/*.md
-!/data/**/*.yaml
-!/data/**/*.yml
-!/data/**/*.toml
+# Local ClimbMix dataset shards stay out of git.
+data/climbmix_24x_newtok_8192/
 data_tokenized/
 **/__pycache__
 **/.DS_Store
@@ -37,3 +30,6 @@ node_modules/
 wandb/
 checkpoints/
 !experiments/**
+
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/

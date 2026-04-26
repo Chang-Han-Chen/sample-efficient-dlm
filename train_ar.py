@@ -24,7 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx, serialization
 
-from transformer.transformer import Transformer
+from transformer.transformer import Transformer, has_moe_layer
 from training.data import MemoryMappedTokenDataset
 from training.diffusion import (
     DiffusionConfig,
@@ -111,6 +111,7 @@ def parse_args():
     p.add_argument("--attn-gating", default=False)
     p.add_argument("--layernorm-scaling", action="store_true")
     p.add_argument("--value-embedding", action="store_true")
+    p.add_argument("--value-embedding-layers", default="alternating")
     p.add_argument("--value-embedding-scale", type=float, default=1.0)
     p.add_argument("--value-embedding-gain", dest="value_embedding_gain", action="store_true")
     p.add_argument("--no-value-embedding-gain", dest="value_embedding_gain", action="store_false")
@@ -127,18 +128,40 @@ def parse_args():
     p.add_argument("--weight-tying", dest="weight_tying", action="store_true")
     p.add_argument("--no-weight-tying", dest="weight_tying", action="store_false")
     p.set_defaults(weight_tying=True)
+    p.add_argument("--moe", dest="moe", action="store_true")
+    p.add_argument("--no-moe", dest="moe", action="store_false")
+    p.set_defaults(moe=False)
+    p.add_argument("--moe-routing", default="token_choice_switch")
+    p.add_argument("--moe-top-k", type=int, default=1)
+    p.add_argument("--moe-layers", default="alternating")
+    p.add_argument("--moe-num-experts", type=int, default=4)
+    p.add_argument("--moe-expert-d-ff", type=int, default=None)
+    p.add_argument("--moe-capacity-factor", type=float, default=1.25)
+    p.add_argument("--moe-use-router-prob", dest="moe_use_router_prob", action="store_true")
+    p.add_argument("--no-moe-use-router-prob", dest="moe_use_router_prob", action="store_false")
+    p.set_defaults(moe_use_router_prob=True)
+    p.add_argument("--moe-drop-tokens", dest="moe_drop_tokens", action="store_true")
+    p.add_argument("--no-moe-drop-tokens", dest="moe_drop_tokens", action="store_false")
+    p.set_defaults(moe_drop_tokens=True)
+    p.add_argument("--moe-router-dtype", choices=("float32",), default="float32")
+    p.add_argument("--moe-load-balance-loss-weight", type=float, default=0.0)
+    p.add_argument("--moe-router-z-loss-weight", type=float, default=0.0)
     p.add_argument("--grad-checkpoint-layers", type=int, default=0)
     p.add_argument("--adam-lr", type=float, default=None, help=argparse.SUPPRESS)
     p.add_argument("--table-adam-lr", type=float, default=7e-3)
     p.add_argument("--value-embedding-table-adam-lr", type=float, default=None, help=argparse.SUPPRESS)
     p.add_argument("--value-embedding-mask-adam-lr", type=float, default=None)
     p.add_argument("--scalar-adam-lr", type=float, default=7e-3)
+    p.add_argument("--router-adam-lr", type=float, default=1e-3)
     p.add_argument("--muon-lr", type=float, default=1.5e-2)
     p.add_argument("--lr-mult", type=float, default=1.0)
     p.add_argument("--adam-wd", type=float, default=0.0)
+    p.add_argument("--router-adam-wd", type=float, default=0.0)
     p.add_argument("--muon-wd", type=float, default=1e-4)
     p.add_argument("--adam-beta1", type=float, default=0.95)
     p.add_argument("--adam-beta2", type=float, default=0.99)
+    p.add_argument("--router-adam-beta1", type=float, default=0.9)
+    p.add_argument("--router-adam-beta2", type=float, default=0.999)
     p.add_argument("--value-embedding-adam-beta1", type=float, default=0.95)
     p.add_argument("--value-embedding-adam-beta2", type=float, default=0.99)
     p.add_argument("--adam-eps", type=float, default=1e-8)
@@ -222,6 +245,19 @@ def shard_accumulated_for_devices(array: np.ndarray, num_devices: int) -> np.nda
     per_device = global_batch // num_devices
     sharded = array.reshape((accum_steps, num_devices, per_device, *array.shape[2:]))
     return np.swapaxes(sharded, 0, 1)
+
+
+def parse_layer_placement(value):
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return [int(x) for x in value]
+    if isinstance(value, str):
+        text = value.strip()
+        if "," in text:
+            return [int(x.strip()) for x in text.split(",") if x.strip()]
+        return text
+    raise TypeError(f"Unsupported layer placement value: {value!r}")
 
 
 def scalarize_metrics(metrics: dict[str, jax.Array]) -> dict[str, jax.Array]:
@@ -467,6 +503,42 @@ def estimate_compute_parameters(
     return trainable_params + (vocab_size * d_model if weight_tying else 0)
 
 
+def estimate_active_compute_parameters(
+    trainable_params: int,
+    *,
+    vocab_size: int,
+    d_model: int,
+    d_ff: int,
+    n_layers: int,
+    weight_tying: bool,
+    moe: bool,
+    moe_layers,
+    moe_num_experts: int,
+    moe_expert_d_ff: int | None,
+    moe_capacity_factor: float,
+) -> tuple[int, int, bool]:
+    dense_compute_params = estimate_compute_parameters(
+        trainable_params,
+        vocab_size=vocab_size,
+        d_model=d_model,
+        weight_tying=weight_tying,
+    )
+    if not moe:
+        return dense_compute_params, dense_compute_params, False
+
+    active = dense_compute_params
+    expert_width = d_ff if moe_expert_d_ff is None else int(moe_expert_d_ff)
+    expert_width = int(expert_width // 64 * 64)
+    per_expert_params = 3 * d_model * expert_width
+    num_moe_layers = sum(
+        1 for idx in range(n_layers) if has_moe_layer(idx, n_layers, moe_layers)
+    )
+    inactive_expert_params = num_moe_layers * int(moe_num_experts) * per_expert_params
+    active_expert_params = num_moe_layers * float(moe_capacity_factor) * per_expert_params
+    active = int(round(active - inactive_expert_params + active_expert_params))
+    return dense_compute_params, max(active, 0), True
+
+
 def estimate_training_flops_per_token(
     *,
     compute_params: int,
@@ -483,10 +555,14 @@ def estimate_training_flops_per_token(
 
 def main():
     args = parse_args()
+    args.value_embedding_layers = parse_layer_placement(args.value_embedding_layers)
+    args.moe_layers = parse_layer_placement(args.moe_layers)
     if args.checkpoint_interval < 0:
         raise ValueError("--checkpoint-interval must be non-negative")
     if args.restore_checkpoint is not None and args.restore_wandb_artifact is not None:
         raise ValueError("Use either --restore-checkpoint or --restore-wandb-artifact, not both")
+    if args.moe and args.moe_router_dtype != "float32":
+        raise ValueError("First MoE implementation only supports fp32 router dtype.")
     if args.disable_compilation_cache:
         jax.config.update("jax_enable_compilation_cache", False)
     else:
@@ -551,6 +627,7 @@ def main():
         attn_gating=args.attn_gating,
         layernorm_scaling=args.layernorm_scaling,
         value_embedding=args.value_embedding,
+        value_embedding_layers=args.value_embedding_layers,
         value_embedding_scale=args.value_embedding_scale,
         value_embedding_gain=args.value_embedding_gain,
         value_embedding_gain_init=args.value_embedding_gain_init,
@@ -572,6 +649,16 @@ def main():
         fuse_qkv=not args.disable_qkv_fusion,
         fuse_swiglu=not args.disable_swiglu_fusion,
         dtype=dtype,
+        moe=args.moe,
+        moe_routing=args.moe_routing,
+        moe_top_k=args.moe_top_k,
+        moe_layers=args.moe_layers,
+        moe_num_experts=args.moe_num_experts,
+        moe_expert_d_ff=args.moe_expert_d_ff,
+        moe_capacity_factor=args.moe_capacity_factor,
+        moe_use_router_prob=args.moe_use_router_prob,
+        moe_router_dtype=jnp.float32,
+        moe_drop_tokens=args.moe_drop_tokens,
     )
     table_adam_lr_base = args.table_adam_lr if args.adam_lr is None else args.adam_lr
     value_embedding_mask_adam_lr_base = (
@@ -586,10 +673,13 @@ def main():
         table_adam_lr=table_adam_lr_base * args.lr_mult,
         value_embedding_mask_adam_lr=value_embedding_mask_adam_lr_base * args.lr_mult,
         scalar_adam_lr=scalar_adam_lr_base * args.lr_mult,
+        router_adam_lr=args.router_adam_lr * args.lr_mult,
         muon_lr=args.muon_lr * args.lr_mult,
         adam_weight_decay=args.adam_wd,
+        router_adam_weight_decay=args.router_adam_wd,
         muon_weight_decay=args.muon_wd,
         adam_betas=(args.adam_beta1, args.adam_beta2),
+        router_adam_betas=(args.router_adam_beta1, args.router_adam_beta2),
         value_embedding_adam_betas=(
             args.value_embedding_adam_beta1,
             args.value_embedding_adam_beta2,
@@ -631,11 +721,18 @@ def main():
             flush=True,
         )
     trainable_params = count_parameters(model)
-    compute_params = estimate_compute_parameters(
+    dense_compute_params, active_compute_params, moe_aware_compute_estimate = estimate_active_compute_parameters(
         trainable_params,
         vocab_size=model_vocab_size,
         d_model=args.d_model,
+        d_ff=args.d_ff,
+        n_layers=args.n_layers,
         weight_tying=args.weight_tying,
+        moe=args.moe,
+        moe_layers=args.moe_layers,
+        moe_num_experts=args.moe_num_experts,
+        moe_expert_d_ff=args.moe_expert_d_ff,
+        moe_capacity_factor=args.moe_capacity_factor,
     )
     model_sequence_length = (
         2 * args.context_length
@@ -645,7 +742,7 @@ def main():
         else args.context_length
     )
     flops_per_token = estimate_training_flops_per_token(
-        compute_params=compute_params,
+        compute_params=active_compute_params,
         n_layers=args.n_layers,
         n_heads=args.n_heads,
         d_model=args.d_model,
@@ -747,12 +844,25 @@ def main():
         "attn_gating": args.attn_gating,
         "layernorm_scaling": args.layernorm_scaling,
         "value_embedding": args.value_embedding,
+        "value_embedding_layers": args.value_embedding_layers,
         "value_embedding_scale": args.value_embedding_scale,
         "value_embedding_gain": args.value_embedding_gain,
         "value_embedding_gain_init": args.value_embedding_gain_init,
         "value_embedding_split_mask_token": args.value_embedding_split_mask_token,
         "value_embedding_mask_vector": args.value_embedding_mask_vector,
         "weight_tying": args.weight_tying,
+        "moe": args.moe,
+        "moe_routing": args.moe_routing,
+        "moe_top_k": args.moe_top_k,
+        "moe_layers": args.moe_layers,
+        "moe_num_experts": args.moe_num_experts,
+        "moe_expert_d_ff": args.moe_expert_d_ff,
+        "moe_capacity_factor": args.moe_capacity_factor,
+        "moe_use_router_prob": args.moe_use_router_prob,
+        "moe_drop_tokens": args.moe_drop_tokens,
+        "moe_router_dtype": args.moe_router_dtype,
+        "moe_load_balance_loss_weight": args.moe_load_balance_loss_weight,
+        "moe_router_z_loss_weight": args.moe_router_z_loss_weight,
         "loss_impl": args.loss_impl,
         "logit_chunk_size": args.logit_chunk_size,
         "optimizer": "NorMuonCWD+AdamW",
@@ -760,14 +870,18 @@ def main():
         "table_adam_lr_base": table_adam_lr_base,
         "value_embedding_mask_adam_lr_base": value_embedding_mask_adam_lr_base,
         "scalar_adam_lr_base": scalar_adam_lr_base,
+        "router_adam_lr_base": args.router_adam_lr,
         "muon_lr_base": args.muon_lr,
         "table_adam_lr_peak": opt_cfg.table_adam_lr,
         "value_embedding_mask_adam_lr_peak": opt_cfg.value_embedding_mask_adam_lr,
         "scalar_adam_lr_peak": opt_cfg.scalar_adam_lr,
+        "router_adam_lr_peak": opt_cfg.router_adam_lr,
         "muon_lr_peak": opt_cfg.muon_lr,
         "adam_wd": args.adam_wd,
+        "router_adam_wd": args.router_adam_wd,
         "muon_wd": args.muon_wd,
         "adam_betas": [args.adam_beta1, args.adam_beta2],
+        "router_adam_betas": [args.router_adam_beta1, args.router_adam_beta2],
         "value_embedding_adam_betas": [
             args.value_embedding_adam_beta1,
             args.value_embedding_adam_beta2,
@@ -778,7 +892,10 @@ def main():
         "momentum_warmup_steps": args.momentum_warmup_steps,
         "momentum_warmup_start": args.momentum_warmup_start,
         "trainable_param_count": trainable_params,
-        "compute_param_count": compute_params,
+        "dense_compute_param_count": dense_compute_params,
+        "active_compute_param_count_estimate": active_compute_params,
+        "compute_param_count": active_compute_params,
+        "moe_aware_compute_estimate": moe_aware_compute_estimate,
         "flops_per_token_estimate": flops_per_token,
         "peak_flops_denominator": args.peak_flops,
         "jax_version": jax.__version__,
@@ -954,6 +1071,8 @@ def main():
                         args.max_grad_norm,
                         args.loss_impl,
                         args.logit_chunk_size,
+                        args.moe_load_balance_loss_weight,
+                        args.moe_router_z_loss_weight,
                     )
                 else:
                     step_fn = (
@@ -970,6 +1089,8 @@ def main():
                         args.max_grad_norm,
                         args.loss_impl,
                         args.logit_chunk_size,
+                        args.moe_load_balance_loss_weight,
+                        args.moe_router_z_loss_weight,
                     )
             else:
                 if args.grad_accum_steps == 1:
@@ -994,6 +1115,8 @@ def main():
                         args.logit_chunk_size,
                         model_context.bd3_block_len,
                         train_loss_normalizer,
+                        args.moe_load_balance_loss_weight,
+                        args.moe_router_z_loss_weight,
                     )
                 else:
                     step_fn = (
@@ -1017,6 +1140,8 @@ def main():
                         args.logit_chunk_size,
                         model_context.bd3_block_len,
                         train_loss_normalizer,
+                        args.moe_load_balance_loss_weight,
+                        args.moe_router_z_loss_weight,
                     )
             if args.data_parallel:
                 metrics = scalarize_metrics(metrics)
@@ -1028,7 +1153,7 @@ def main():
             if step >= args.measure_start_step:
                 measured_time += elapsed
                 measured_steps += 1
-            table_adam_lr, ve_mask_adam_lr, scalar_adam_lr, muon_lr = learning_rates(jnp.asarray(step, dtype=jnp.int32), opt_cfg)
+            table_adam_lr, ve_mask_adam_lr, scalar_adam_lr, router_adam_lr, muon_lr = learning_rates(jnp.asarray(step, dtype=jnp.int32), opt_cfg)
             row = {
                 "step": step,
                 "loss": loss_value,
@@ -1038,6 +1163,7 @@ def main():
                 "table_adam_lr": float(table_adam_lr),
                 "value_embedding_mask_adam_lr": float(ve_mask_adam_lr),
                 "scalar_adam_lr": float(scalar_adam_lr),
+                "router_adam_lr": float(router_adam_lr),
                 "muon_lr": float(muon_lr),
                 "data_time_sec": data_time,
                 "step_time_sec": elapsed,
@@ -1046,6 +1172,9 @@ def main():
                 row["supervised_tokens"] = float(metrics["supervised_tokens"])
             if "loss_normalizer" in metrics:
                 row["loss_normalizer"] = float(metrics["loss_normalizer"])
+            for key, value in metrics.items():
+                if key.startswith("moe_"):
+                    row[key] = float(value)
             if eval_dataset is not None and step % args.log_every == 0:
                 # When data-parallel is on, the global batch is sized to fit only
                 # after sharding to ``num_devices``. Eval here runs through a
@@ -1086,12 +1215,20 @@ def main():
                     if "supervised_tokens" in row
                     else ""
                 )
+                moe_text = (
+                    f" moe_aux={row['moe_aux_loss']:.4f} "
+                    f"moe_drop={row['moe_dropped_fraction']:.4f} "
+                    f"moe_ent={row['moe_router_entropy']:.4f}"
+                    if "moe_aux_loss" in row
+                    else ""
+                )
                 print(
                     f"step={step:05d} loss={row['loss']:.4f}{eval_text} "
-                    f"z={row['z_loss']:.4f}{sup_text} grad_norm={row['grad_norm']:.3f} "
+                    f"z={row['z_loss']:.4f}{sup_text}{moe_text} grad_norm={row['grad_norm']:.3f} "
                     f"table_lr={row['table_adam_lr']:.3e} "
                     f"ve_mask_lr={row['value_embedding_mask_adam_lr']:.3e} "
                     f"scalar_lr={row['scalar_adam_lr']:.3e} "
+                    f"router_lr={row['router_adam_lr']:.3e} "
                     f"muon_lr={row['muon_lr']:.3e} "
                     f"data_time={data_time:.4f}s step_time={elapsed:.4f}s",
                     flush=True,
