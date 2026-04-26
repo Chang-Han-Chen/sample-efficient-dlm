@@ -6,9 +6,9 @@ profiling, or conclusions change materially.
 
 ## Current Objective
 
-Run the AR intervention ablation matrix from config files before moving back
-to diffusion. The immediate matrix is baseline, old bundle, and old bundle
-plus value embeddings.
+Run the MDLM value-embedding/no-value-residual transfer check after the AR
+matrix showed that the stable value-embedding variant is competitive with the
+tuned baseline but behind the old bundle.
 
 ## User Decisions
 
@@ -24,6 +24,10 @@ plus value embeddings.
 - Treat MDLM peak LRs as likely shared with the AR-selected LR family unless a
   run becomes unstable. Do not spend time on a separate MDLM LR sweep; use only
   short sanity probes when changing model/objective shape.
+- For the next MDLM run, transfer the AR value-embedding/no-value-residual
+  recipe directly: QK-norm on, per-head attention gating on,
+  layernorm/depth scaling on, value embedding on, value residual off,
+  value-embedding gain off, `lr_mult=2.0`, scalar Adam base LR `0.0005`.
 
 ## Implemented Backbone Features
 
@@ -1209,4 +1213,57 @@ Current AR-old-bundle probe conclusion:
 - `lr_mult=10.0` does not look useful; treat `5.0` as the selected
   old-bundle multiplier for the next run.
 - `lr_mult=0.5` should not be promoted.
-- No 5100-step run has been launched yet.
+- Later W&B runs on another machine superseded the short-probe baseline
+  conclusion. The default-`lr_mult=1.0` baseline run destabilized late: best
+  eval was `3.2753` at step `1200`, then eval worsened to `3.4982` by step
+  `2650` before crashing around step `2692`. The tuned baseline
+  `ar_baseline_lr0p8` finished 5100 steps with best eval `2.8529` at step
+  `4450` and final eval `2.8841` at step `5050`.
+- A completed external W&B `ar_old_bundle` 5100-step run with `lr_mult=5.0`
+  reached final eval `2.8000` at step `5050`, with late evals mostly in the
+  `2.77-2.82` band. This remains the best AR configuration observed so far.
+
+## AR Value Embedding Without Value Residual
+
+The stable value-embedding variant removed value residual and removed the
+trainable VE gain:
+
+- Config base: `jax/configs/experiments/ar_value_embedding.yaml`.
+- Runtime overrides: `--no-attn-val-residual --no-value-embedding-gain
+  --lr-mult 2.0`.
+- Data/tokenizer: `data/climbmix_24x_newtok_8192`, with 24 train shards and
+  about `1.542B` train tokens. A 5100-step run at batch 512, seq 512 consumes
+  about `1.337B` clean tokens, or about `0.867` train epochs.
+- Parameter count for the no-VR/no-gain VE model was `88,168,712`, matching
+  expectation: old bundle `63,001,376` minus 24 value-residual scalars plus
+  four VE tables (`25,165,824`) plus four VE gates (`1,536`).
+- A from-scratch 5100-step launch with this recipe destabilized almost
+  immediately, so the final long run was resumed from the stable 500-step
+  checkpoint at
+  `runs/ar_matrix/newtok_smoke_500/ar_value_embedding_no_vr_nogain_lr2p0/checkpoints/final`.
+- Completed run:
+  `runs/ar_matrix/ar_value_embedding_no_vr_nogain_lr2p0_5k1_from500/train.jsonl`.
+- W&B run id: `dsezmr2u`.
+- Restored at step `499` and resumed from step `500`; the final checkpoint was
+  saved at
+  `runs/ar_matrix/ar_value_embedding_no_vr_nogain_lr2p0_5k1_from500/checkpoints/final`.
+- Best checkpoint:
+  `runs/ar_matrix/ar_value_embedding_no_vr_nogain_lr2p0_5k1_from500/checkpoints/best`.
+- Best eval loss was `2.8480` at step `5000`. The last logged eval was
+  `2.8895` at step `5050`; final train loss at step `5099` was `2.8495` with
+  grad norm `0.5751`.
+- Through the long run, eval stayed stable after step 500 and late grad norms
+  stayed around `0.55-0.63`; no late runaway was observed.
+- Performance summary: average measured step `0.6258s`, `418.9k` tokens/s,
+  estimated `253.2` TFLOP/s, `81.2%` MFU, JAX peak HBM `42.26 GB`.
+
+AR conclusion after the corrected baseline comparison:
+
+- `ar_old_bundle` remains best (`~2.8000` final eval).
+- `ar_value_embedding_no_vr_nogain_lr2p0` is competitive with the tuned
+  baseline and slightly better by best eval (`2.8480` versus baseline
+  `2.8529`), but its final eval (`2.8895`) is similar to the tuned baseline
+  final eval (`2.8841`).
+- The default baseline LR conclusion was wrong for full-length training:
+  `lr_mult=0.8` is the stable baseline setting, while `lr_mult=1.0`
+  destabilizes late.

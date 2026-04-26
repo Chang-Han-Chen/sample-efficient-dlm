@@ -66,16 +66,32 @@ def test_param_grouping():
     assert ve_specs["blocks"][1]["attn"]["value_embedding_gate"]["weight"].kind == "muon"
     assert ve_specs["blocks"][1]["attn"]["value_embedding_gain"].kind == "adam_scalar"
 
-
-def test_value_embedding_table_uses_separate_adam_betas():
-    model = Transformer(
-        nnx.Rngs(2),
+    split_ve_model = Transformer(
+        nnx.Rngs(11),
         n_layers=2,
-        vocab_size=32,
+        vocab_size=33,
         d_model=64,
         n_heads=4,
         d_ff=128,
         value_embedding=True,
+        value_embedding_split_token_id=32,
+        dtype=jnp.float32,
+    )
+    split_ve_specs = build_param_specs(split_ve_model)
+    assert split_ve_specs["blocks"][1]["attn"]["value_embedding_table"]["weight"].kind == "adam_ve_table"
+    assert split_ve_specs["blocks"][1]["attn"]["value_embedding_table"]["split_weight"].kind == "adam_ve_mask"
+
+
+def test_value_embedding_mask_uses_separate_adam_betas():
+    model = Transformer(
+        nnx.Rngs(2),
+        n_layers=2,
+        vocab_size=33,
+        d_model=64,
+        n_heads=4,
+        d_ff=128,
+        value_embedding=True,
+        value_embedding_split_token_id=32,
         dtype=jnp.float32,
     )
     tx = create_normuon_adamw(
@@ -98,9 +114,47 @@ def test_value_embedding_table_uses_separate_adam_betas():
     _, new_state = tx.update(grads, opt_state, params)
 
     embedding_m = new_state.adam_m["embedding"]["weight"]
-    ve_m = new_state.adam_m["blocks"][1]["attn"]["value_embedding_table"]["weight"]
+    ve_m = new_state.adam_m["blocks"][1]["attn"]["value_embedding_table"]["split_weight"]
     np.testing.assert_allclose(np.asarray(embedding_m), 0.0005, atol=1e-8, rtol=1e-6)
     np.testing.assert_allclose(np.asarray(ve_m), 0.002, atol=1e-8, rtol=1e-6)
+
+
+def test_value_embedding_mask_uses_separate_adam_lr():
+    model = Transformer(
+        nnx.Rngs(3),
+        n_layers=2,
+        vocab_size=33,
+        d_model=64,
+        n_heads=4,
+        d_ff=128,
+        value_embedding=True,
+        value_embedding_split_token_id=32,
+        dtype=jnp.float32,
+    )
+    tx = create_normuon_adamw(
+        model,
+        NormuonAdamWConfig(
+            table_adam_lr=1e-3,
+            value_embedding_mask_adam_lr=2e-3,
+            scalar_adam_lr=1e-3,
+            muon_lr=1e-3,
+            adam_betas=(0.95, 0.99),
+            value_embedding_adam_betas=(0.95, 0.99),
+            adam_weight_decay=0.0,
+            muon_weight_decay=0.0,
+            scheduler="constant",
+        ),
+    )
+    params_state = nnx.state(model, nnx.Param)
+    params = nnx.as_pure(params_state)
+    opt_state = tx.init(params_state)
+    grads = jax.tree_util.tree_map(lambda p: jnp.ones_like(p) * 0.01, params)
+    updates, _ = tx.update(grads, opt_state, params)
+
+    embedding_update = updates["embedding"]["weight"]
+    ve_update = updates["blocks"][1]["attn"]["value_embedding_table"]["split_weight"]
+    np.testing.assert_allclose(np.asarray(embedding_update), -1e-3, atol=1e-6, rtol=1e-5)
+    np.testing.assert_allclose(np.asarray(ve_update), -2e-3, atol=1e-6, rtol=1e-5)
 
 
 def test_normuon_adamw_update_exercises_both_optimizer_paths():

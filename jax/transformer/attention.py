@@ -120,8 +120,11 @@ class MultiHeadSelfAttention(nnx.Module):
         value_residual: bool = False,
         value_embedding: bool = False,
         value_embedding_scale: float = 1.0,
+        value_embedding_gain: bool = True,
+        value_embedding_gain_init: float = 0.0,
         value_embedding_gate_channels: int = 32,
         value_embedding_init_std: float | None = None,
+        value_embedding_split_token_id: int | None = None,
         gating: str | bool | None = False,
         is_causal: bool = True,
         attention_impl: AttentionImpl = None,
@@ -144,6 +147,8 @@ class MultiHeadSelfAttention(nnx.Module):
         self.value_residual = value_residual
         self.value_embedding = value_embedding
         self.value_embedding_scale = float(value_embedding_scale)
+        self.value_embedding_gain_enabled = bool(value_embedding_gain)
+        self.value_embedding_gain_init = float(value_embedding_gain_init)
         self.value_embedding_gate_channels = min(int(value_embedding_gate_channels), d_model)
         self.gating = gating
         self.is_causal = bool(is_causal)
@@ -181,7 +186,10 @@ class MultiHeadSelfAttention(nnx.Module):
         if self.value_embedding:
             if vocab_size is None:
                 raise ValueError("vocab_size is required when value_embedding=True")
-            self.value_embedding_gain = nnx.Param(jnp.zeros((1,), dtype=jnp.float32))
+            if self.value_embedding_gain_enabled:
+                self.value_embedding_gain = nnx.Param(
+                    jnp.full((1,), self.value_embedding_gain_init, dtype=jnp.float32)
+                )
             self.value_embedding_table = ValueEmbedding(
                 rngs,
                 vocab_size,
@@ -190,6 +198,7 @@ class MultiHeadSelfAttention(nnx.Module):
                 d_model,
                 dtype=dtype,
                 init_std=value_embedding_init_std,
+                split_token_id=value_embedding_split_token_id,
             )
             self.value_embedding_gate = Linear(
                 rngs,
@@ -285,10 +294,10 @@ class MultiHeadSelfAttention(nnx.Module):
             gate_in = x[..., : self.value_embedding_gate_channels]
             gate = 2.0 * jax.nn.sigmoid(self.value_embedding_gate(gate_in))
             gate = gate[..., None].astype(v.dtype)
-            gain = (
-                self.value_embedding_scale
-                * self.value_embedding_gain.value.astype(jnp.float32)
-            ).astype(v.dtype)
+            gain = jnp.asarray(self.value_embedding_scale, dtype=jnp.float32)
+            if self.value_embedding_gain_enabled:
+                gain = gain * self.value_embedding_gain.value.astype(jnp.float32)
+            gain = gain.astype(v.dtype)
             v = v + gain * gate * value_emb
 
         # --- QK-norm -----------------------------------------------------

@@ -105,17 +105,26 @@ def parse_args():
     p.add_argument("--disable-qkv-fusion", action="store_true")
     p.add_argument("--disable-swiglu-fusion", action="store_true")
     p.add_argument("--attn-qknorm", action="store_true")
-    p.add_argument("--attn-val-residual", action="store_true")
+    p.add_argument("--attn-val-residual", dest="attn_val_residual", action="store_true")
+    p.add_argument("--no-attn-val-residual", dest="attn_val_residual", action="store_false")
+    p.set_defaults(attn_val_residual=False)
     p.add_argument("--attn-gating", default=False)
     p.add_argument("--layernorm-scaling", action="store_true")
     p.add_argument("--value-embedding", action="store_true")
     p.add_argument("--value-embedding-scale", type=float, default=1.0)
+    p.add_argument("--value-embedding-gain", dest="value_embedding_gain", action="store_true")
+    p.add_argument("--no-value-embedding-gain", dest="value_embedding_gain", action="store_false")
+    p.set_defaults(value_embedding_gain=True)
+    p.add_argument("--value-embedding-gain-init", type=float, default=0.0)
+    p.add_argument("--value-embedding-split-mask-token", action="store_true")
     p.add_argument("--weight-tying", dest="weight_tying", action="store_true")
     p.add_argument("--no-weight-tying", dest="weight_tying", action="store_false")
     p.set_defaults(weight_tying=True)
     p.add_argument("--grad-checkpoint-layers", type=int, default=0)
     p.add_argument("--adam-lr", type=float, default=None, help=argparse.SUPPRESS)
     p.add_argument("--table-adam-lr", type=float, default=7e-3)
+    p.add_argument("--value-embedding-table-adam-lr", type=float, default=None, help=argparse.SUPPRESS)
+    p.add_argument("--value-embedding-mask-adam-lr", type=float, default=None)
     p.add_argument("--scalar-adam-lr", type=float, default=7e-3)
     p.add_argument("--muon-lr", type=float, default=1.5e-2)
     p.add_argument("--lr-mult", type=float, default=1.0)
@@ -536,6 +545,13 @@ def main():
         layernorm_scaling=args.layernorm_scaling,
         value_embedding=args.value_embedding,
         value_embedding_scale=args.value_embedding_scale,
+        value_embedding_gain=args.value_embedding_gain,
+        value_embedding_gain_init=args.value_embedding_gain_init,
+        value_embedding_split_token_id=(
+            diffusion_cfg.mask_token_id
+            if args.value_embedding_split_mask_token and diffusion_cfg is not None
+            else None
+        ),
         weight_tying=args.weight_tying,
         num_grad_checkpoint_layers=args.grad_checkpoint_layers,
         max_seq_len=args.context_length,
@@ -546,9 +562,17 @@ def main():
         dtype=dtype,
     )
     table_adam_lr_base = args.table_adam_lr if args.adam_lr is None else args.adam_lr
+    value_embedding_mask_adam_lr_base = (
+        args.value_embedding_mask_adam_lr
+        if args.value_embedding_mask_adam_lr is not None
+        else args.value_embedding_table_adam_lr
+        if args.value_embedding_table_adam_lr is not None
+        else table_adam_lr_base
+    )
     scalar_adam_lr_base = args.scalar_adam_lr if args.adam_lr is None else args.adam_lr
     opt_cfg = NormuonAdamWConfig(
         table_adam_lr=table_adam_lr_base * args.lr_mult,
+        value_embedding_mask_adam_lr=value_embedding_mask_adam_lr_base * args.lr_mult,
         scalar_adam_lr=scalar_adam_lr_base * args.lr_mult,
         muon_lr=args.muon_lr * args.lr_mult,
         adam_weight_decay=args.adam_wd,
@@ -712,15 +736,20 @@ def main():
         "layernorm_scaling": args.layernorm_scaling,
         "value_embedding": args.value_embedding,
         "value_embedding_scale": args.value_embedding_scale,
+        "value_embedding_gain": args.value_embedding_gain,
+        "value_embedding_gain_init": args.value_embedding_gain_init,
+        "value_embedding_split_mask_token": args.value_embedding_split_mask_token,
         "weight_tying": args.weight_tying,
         "loss_impl": args.loss_impl,
         "logit_chunk_size": args.logit_chunk_size,
         "optimizer": "NorMuonCWD+AdamW",
         "lr_mult": args.lr_mult,
         "table_adam_lr_base": table_adam_lr_base,
+        "value_embedding_mask_adam_lr_base": value_embedding_mask_adam_lr_base,
         "scalar_adam_lr_base": scalar_adam_lr_base,
         "muon_lr_base": args.muon_lr,
         "table_adam_lr_peak": opt_cfg.table_adam_lr,
+        "value_embedding_mask_adam_lr_peak": opt_cfg.value_embedding_mask_adam_lr,
         "scalar_adam_lr_peak": opt_cfg.scalar_adam_lr,
         "muon_lr_peak": opt_cfg.muon_lr,
         "adam_wd": args.adam_wd,
@@ -986,7 +1015,7 @@ def main():
             if step >= args.measure_start_step:
                 measured_time += elapsed
                 measured_steps += 1
-            table_adam_lr, scalar_adam_lr, muon_lr = learning_rates(jnp.asarray(step, dtype=jnp.int32), opt_cfg)
+            table_adam_lr, ve_mask_adam_lr, scalar_adam_lr, muon_lr = learning_rates(jnp.asarray(step, dtype=jnp.int32), opt_cfg)
             row = {
                 "step": step,
                 "loss": loss_value,
@@ -994,6 +1023,7 @@ def main():
                 "total_loss": float(metrics["total_loss"]),
                 "grad_norm": float(metrics["grad_norm"]),
                 "table_adam_lr": float(table_adam_lr),
+                "value_embedding_mask_adam_lr": float(ve_mask_adam_lr),
                 "scalar_adam_lr": float(scalar_adam_lr),
                 "muon_lr": float(muon_lr),
                 "data_time_sec": data_time,
@@ -1047,6 +1077,7 @@ def main():
                     f"step={step:05d} loss={row['loss']:.4f}{eval_text} "
                     f"z={row['z_loss']:.4f}{sup_text} grad_norm={row['grad_norm']:.3f} "
                     f"table_lr={row['table_adam_lr']:.3e} "
+                    f"ve_mask_lr={row['value_embedding_mask_adam_lr']:.3e} "
                     f"scalar_lr={row['scalar_adam_lr']:.3e} "
                     f"muon_lr={row['muon_lr']:.3e} "
                     f"data_time={data_time:.4f}s step_time={elapsed:.4f}s",
