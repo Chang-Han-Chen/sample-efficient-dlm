@@ -210,10 +210,36 @@
     - step `3300`: eval `4.7616`, grad norm `153`, drop `0.3459`, entropy `0.385`, expert fraction max `0.655`
     - step `3500`: eval `6.5181`, grad norm `541`, drop `0.5388`, entropy `0.190`, expert fraction max `0.835`
   - Wall time before stop: mean `0.2637s`, median `0.2550s`.
-- Revised interpretation:
+  - Revised interpretation:
   - The split-router architecture improved the 1K smoke (`3.0396 @950`) but did not produce a stable long run with the same optimizer settings.
   - Principled explanation: before the split, deeper MoE routers saw `depth_scale * RMSNorm(x)`, which accidentally damped router logits and kept softmax probabilities higher entropy. After the split, routers see unscaled `RMSNorm(x)`, which removes depth-dependent router temperature coupling but also removes that accidental logit damping. With the same router LR/z-loss/gate, the router can sharpen over training, hit the top-1 capacity cliff, and collapse.
   - Next principled variants should keep the split but add an explicit router control knob: lower router LR, explicit router temperature > 1, stronger router z-loss, or mean-normalized selected-prob gate. Do not promote the current split-router `lr_mult=2.0` recipe to a full baseline.
+- Lower-router-LR split probe:
+  - Run: `ar_moe_old_bundle_splitrouter_lr2p0_routerhalf_full_nockpt` / W&B run id `wv47sqt1`, output dir `runs/moe_matrix/ar_moe_old_bundle_splitrouter_lr2p0_routerhalf_full_nockpt`.
+  - Config was the same split-router old-bundle recipe with `lr_mult=2.0`, but `--router-adam-lr 0.0005`, giving router peak `0.001` instead of `0.002`. Table/scalar/Muon peaks were unchanged.
+  - Stopped at step `2425` as noncompetitive.
+  - Early router entropy was healthier than the full-router-LR split run, but the loss curve was slower and drops returned anyway:
+    - step `550`: eval `3.2538`, drop `0.0000`, entropy `0.925`
+    - step `950`: eval `3.2181`, drop `0.0349`, entropy `0.827`
+    - step `1600`: best-so-far `3.0254`, drop `0.0001`, entropy `0.691`
+    - step `1900`: eval `3.1294`, drop `0.0394`, entropy `0.616`
+    - step `2400`: best eval `2.9983`, drop `0.0041`, entropy `0.602`
+  - Wall time: mean `0.2612s`, median `0.2548s`.
+  - Conclusion: lowering router LR alone does not fix split-router stability. It preserves entropy early but gives a weaker optimization trajectory, then entropy still drifts down and capacity/drop events recur. Prefer explicit router temperature, stronger z-loss, or gate normalization next.
+- Stronger-router-z-loss split run:
+  - Run: `ar_moe_old_bundle_splitrouter_lr2p0_zloss0p01_full_nockpt` / W&B run id `13fqp3bd`, output dir `runs/moe_matrix/ar_moe_old_bundle_splitrouter_lr2p0_zloss0p01_full_nockpt`.
+  - Config was the same split-router old-bundle recipe with `lr_mult=2.0`, router peak LR `0.002`, Muon peak `0.080`, but `--moe-router-z-loss-weight 0.01` instead of `0.001`.
+  - Completed `5100` train steps: JSONL rows `5100`, last train step `5099`, last eval step `5050`.
+  - Best eval was `2.7621` at step `4450`; last eval was `2.7946` at step `5050`.
+  - This essentially ties the old completed non-split old-bundle full run:
+    - Best-vs-best: z-loss split `2.7621` vs old non-split `2.7564`, delta `+0.0057`.
+    - Last eval: z-loss split `2.7946` vs old non-split `2.8000`, delta `-0.0054`.
+  - Routing was much healthier than the unstable split run and cleaner than the old full run:
+    - Tail from step `5000` onward: mean drop `0.00236`, mean router entropy `0.8773`, mean pre-clip grad norm `0.1082`.
+    - Recent eval rows from `4300` through `5050` had drop `0.0000`; entropy stayed around `0.875-0.887`; router z stayed around `0.046-0.049`.
+    - Best eval row at step `4450`: eval `2.7621`, drop `0.0000`, entropy `0.880`, router z `0.048`, expert fraction max `0.273`.
+  - Wall time per step: mean `0.2650s`, median `0.2561s`, essentially the same as the other old-bundle MoE full runs.
+  - Conclusion: stronger router z-loss is the first split-router variant that stays stable through 5.1K. It does not clearly beat the old non-split full run on best eval, but it matches it within noise and gives a much cleaner router. This is the best current split-router recipe.
 
 ## Remaining notes
 

@@ -112,14 +112,16 @@ class Block(nnx.Module):
         moe_expert_d_ff: int | None = None,
         moe_capacity_factor: float = 1.25,
         moe_use_router_prob: bool = True,
+        moe_split_router_input: bool = True,
         moe_router_dtype: jnp.dtype = jnp.float32,
         moe_drop_tokens: bool = True,
         dtype: jnp.dtype = jnp.float32,
     ):
         self.is_moe = bool(moe)
+        self.moe_split_router_input = bool(moe_split_router_input)
         self.moe_expert_input_scale = (
             float(jax.lax.rsqrt(jnp.float32(depth_position)))
-            if self.is_moe and depth_position is not None
+            if self.is_moe and self.moe_split_router_input and depth_position is not None
             else 1.0
         )
 
@@ -153,7 +155,7 @@ class Block(nnx.Module):
             rngs,
             d_model,
             dtype=dtype,
-            depth_position=None if self.is_moe else depth_position,
+            depth_position=None if self.is_moe and self.moe_split_router_input else depth_position,
         )
         if self.is_moe:
             self.ffn = SwitchMoE(
@@ -203,8 +205,11 @@ class Block(nnx.Module):
         x = x + attn_out
         h = self.ln2(x)
         if self.is_moe:
-            expert_h = h * jnp.asarray(self.moe_expert_input_scale, dtype=h.dtype)
-            ffn_out, moe_aux = self.ffn(expert_h, router_x=h)
+            if self.moe_split_router_input:
+                expert_h = h * jnp.asarray(self.moe_expert_input_scale, dtype=h.dtype)
+                ffn_out, moe_aux = self.ffn(expert_h, router_x=h)
+            else:
+                ffn_out, moe_aux = self.ffn(h)
         else:
             ffn_out = self.ffn(h)
             moe_aux = zero_moe_aux()
@@ -254,6 +259,7 @@ class Transformer(nnx.Module):
         moe_expert_d_ff: int | None = None,
         moe_capacity_factor: float = 1.25,
         moe_use_router_prob: bool = True,
+        moe_split_router_input: bool = True,
         moe_router_dtype: jnp.dtype = jnp.float32,
         moe_drop_tokens: bool = True,
     ):
@@ -308,6 +314,7 @@ class Transformer(nnx.Module):
                     moe_expert_d_ff=moe_expert_d_ff,
                     moe_capacity_factor=moe_capacity_factor,
                     moe_use_router_prob=moe_use_router_prob,
+                    moe_split_router_input=moe_split_router_input,
                     moe_router_dtype=moe_router_dtype,
                     moe_drop_tokens=moe_drop_tokens,
                     dtype=dtype,

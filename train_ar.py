@@ -140,6 +140,9 @@ def parse_args():
     p.add_argument("--moe-use-router-prob", dest="moe_use_router_prob", action="store_true")
     p.add_argument("--no-moe-use-router-prob", dest="moe_use_router_prob", action="store_false")
     p.set_defaults(moe_use_router_prob=True)
+    p.add_argument("--moe-split-router-input", dest="moe_split_router_input", action="store_true")
+    p.add_argument("--no-moe-split-router-input", dest="moe_split_router_input", action="store_false")
+    p.set_defaults(moe_split_router_input=True)
     p.add_argument("--moe-drop-tokens", dest="moe_drop_tokens", action="store_true")
     p.add_argument("--no-moe-drop-tokens", dest="moe_drop_tokens", action="store_false")
     p.set_defaults(moe_drop_tokens=True)
@@ -657,6 +660,7 @@ def main():
         moe_expert_d_ff=args.moe_expert_d_ff,
         moe_capacity_factor=args.moe_capacity_factor,
         moe_use_router_prob=args.moe_use_router_prob,
+        moe_split_router_input=args.moe_split_router_input,
         moe_router_dtype=jnp.float32,
         moe_drop_tokens=args.moe_drop_tokens,
     )
@@ -859,6 +863,7 @@ def main():
         "moe_expert_d_ff": args.moe_expert_d_ff,
         "moe_capacity_factor": args.moe_capacity_factor,
         "moe_use_router_prob": args.moe_use_router_prob,
+        "moe_split_router_input": args.moe_split_router_input,
         "moe_drop_tokens": args.moe_drop_tokens,
         "moe_router_dtype": args.moe_router_dtype,
         "moe_load_balance_loss_weight": args.moe_load_balance_loss_weight,

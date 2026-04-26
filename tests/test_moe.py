@@ -122,6 +122,29 @@ def test_moe_layernorm_scaling_is_split_between_router_and_experts():
     np.testing.assert_allclose(dense_block.moe_expert_input_scale, 1.0, rtol=1e-6)
 
 
+def test_moe_layernorm_scaling_can_use_old_shared_router_input():
+    model = Transformer(
+        nnx.Rngs(9),
+        n_layers=2,
+        vocab_size=32,
+        d_model=32,
+        n_heads=4,
+        d_ff=64,
+        moe=True,
+        moe_layers="all",
+        moe_num_experts=2,
+        moe_split_router_input=False,
+        layernorm_scaling=True,
+        dtype=jnp.float32,
+    )
+    moe_block = model.blocks[1]
+    expected = 1.0 / np.sqrt(2.0)
+    assert not moe_block.moe_split_router_input
+    np.testing.assert_allclose(moe_block.ln1.depth_scaling, expected, rtol=1e-6)
+    np.testing.assert_allclose(moe_block.ln2.depth_scaling, expected, rtol=1e-6)
+    np.testing.assert_allclose(moe_block.moe_expert_input_scale, 1.0, rtol=1e-6)
+
+
 def test_switch_moe_router_and_expert_gradients_are_nonzero():
     moe = SwitchMoE(
         nnx.Rngs(1),
