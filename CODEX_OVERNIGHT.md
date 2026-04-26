@@ -155,22 +155,21 @@
   - `lr_mult=3.0` crosses an instability boundary even when router LR is reduced.
   - Turning off layernorm scaling helps low-LR stability, but at `lr_mult=2.0` both variants are similarly strong. Use `lr_mult=2.0` as the full-run starting point; choose whether to keep layernorm scaling based on whether matching the dense old-bundle intervention bundle is more important than the slightly cleaner routing in the no-layernorm-scaling variant.
 
-## AR MoE old-bundle full-run update
+## AR MoE old-bundle full-run result
 
 - Launched the layernorm-scaling-on best candidate as `ar_moe_old_bundle_lr2p0_full_nockpt` / W&B run id `tpesv0nb`, output dir `runs/moe_matrix/ar_moe_old_bundle_lr2p0_full_nockpt`.
 - Command shape: `configs/experiments/ar_moe_old_bundle.yaml`, `--max-steps 5100`, `--warmup-steps 100`, `--lr-mult 2.0`, checkpoint saving disabled to match the successful 1K probes.
 - Effective LR peaks for this run: table Adam `0.020`, value-embedding/mask Adam group `0.020` even though value embeddings are off, scalar Adam `0.010`, router Adam `0.002`, Muon `0.080`.
-- Latest local log snapshot: last train step `2969`, last eval step `2950`, last eval loss `2.8385`; best eval so far `2.8363` at step `2800`.
-- Wall time per step: mean `0.2644s`, median `0.2555s` after the first few steps. This is close to the 1K old-bundle probe timing and slower than the plain AR MoE baseline's `0.2370s` mean / `0.2313s` median.
-- Recent matched-step comparison versus the completed plain AR MoE baseline `ar_moe_baseline_lr0p8`:
-  - Step `2500`: old-bundle `2.8589` vs plain `2.9136`, delta `-0.0546`.
-  - Step `2550`: old-bundle `2.8865` vs plain `2.9436`, delta `-0.0571`.
-  - Step `2800`: old-bundle `2.8363` vs plain `2.8876`, delta `-0.0512`.
-  - Step `2950`: old-bundle `2.8385` vs plain `2.8921`, delta `-0.0536`.
-- Routing in the healthy full run is clean in the recent window: drop is usually `0.0000` to `0.0032`, router entropy is about `0.84` to `0.89`, and expert min/max fractions are roughly `0.21-0.23` / `0.28-0.30`.
+- Completed `5100` train steps: JSONL rows `5100`, last train step `5099`, last eval step `5050`.
+- Best eval was `2.7564` at step `4800`; last eval was `2.8000` at step `5050`.
+- This beats the completed plain AR MoE baseline `ar_moe_baseline_lr0p8`:
+  - Best-vs-best at step `4800`: old-bundle `2.7564` vs plain `2.8062`, delta `-0.0498`.
+  - Last eval at step `5050`: old-bundle `2.8000` vs plain `2.8380`, delta `-0.0380`.
+- Wall time per step: mean `0.2649s`, median `0.2558s` after the first few steps. This is close to the 1K old-bundle probe timing and slower than the plain AR MoE baseline's `0.2370s` mean / `0.2313s` median.
+- Routing stayed clean through the finish. In the tail from step `5000` onward, mean drop was `0.0020`, mean router entropy was `0.7815`, and mean pre-clip grad norm was `0.0767`. Final train row had loss `2.7788`, drop `0.0000`, entropy `0.7630`.
 - There was one isolated pre-clip grad-norm spike at step `1900` (`5.23e9`) without an accompanying routing collapse or eval regression. Subsequent grad norms returned to the normal `0.03-0.06` range.
 - Earlier failed full launch `ar_moe_old_bundle_lr2p0` / W&B run id `jugxbwpq` was stopped at step `708`; best eval was only `3.4017` at step `700`, with worse routing/drop behavior than the probe. Code inspection did not find a deterministic checkpoint mutation path: checkpoint save serializes copied state, and the LR schedule depends on `step`/`warmup_steps`, not `max_steps`. Current working hypothesis is MoE top-1 route sensitivity and nondeterminism, possibly amplified by sync/timing differences, not a direct checkpointing math bug.
-- Do not judge final ranking yet: the plain AR MoE full run eventually reached best eval `2.8062` at step `4800` and last eval `2.8380` at step `5050`. The old-bundle full run is clearly ahead at matched mid-run steps, but it still needs to finish.
+- Current conclusion: old-bundle with layernorm scaling and `lr_mult=2.0` is the best completed AR MoE run so far. It improves eval over the plain AR MoE baseline by about `0.05` at best eval, at roughly `10-12%` higher step time.
 
 ## Remaining notes
 
