@@ -126,6 +126,35 @@
   - Tail-100 router entropy `0.7140` vs original run tail-100 entropy `0.8118`.
   - Conclusion: router base LR `0.005` is not obviously unstable, but it stresses routing more and only produces noise-level eval improvement. Do not promote it to a full run unless the goal is explicitly to study router dynamics.
 
+## AR MoE old-bundle sweep notes
+
+- Moved from plain AR MoE to old-bundle-only AR MoE, still no value embeddings.
+- Old-bundle means:
+  - `attn_qknorm: true`
+  - `attn_val_residual: true`
+  - `attn_gating: per-head`
+  - `layernorm_scaling: true`
+  - `value_embedding: false`
+- The inherited config default `lr_mult=5.0` was not used as the first run. Initial probes used 1K train steps, 100 warmup steps, no checkpoints, W&B on, and compared against the plain AR MoE baseline at matched steps.
+- Layernorm-scaling-on old-bundle probes:
+  - `lr_mult=0.6`: last/best eval `3.2961` at step `950`, `+0.1435` worse than plain AR MoE at the same step. Had real routing shocks: token drop briefly reached `35.6%`, and pre-clip grad norm reached about `7.2e7`.
+  - `lr_mult=0.8`: last/best eval `3.3672` at step `950`, `+0.2146` worse than plain AR MoE. Router entropy collapsed to about `0.53` by the end, with drop about `5.4%`.
+  - `lr_mult=1.0`: last/best eval `3.1894` at step `950`, only `+0.0368` worse than plain AR MoE. Better than `0.6/0.8`, but still not a win.
+  - `lr_mult=1.25`: stopped at step `704`; last/best eval `3.5534` at step `700`, much worse.
+  - `lr_mult=2.0`: completed 1K and is the best completed old-bundle probe so far. Last/best eval `3.0599` at step `950`, `-0.0926` better than plain AR MoE at the same step. Routing was clean: drop `0.0009`, entropy `0.998`, pre-clip grad norm `0.0406`.
+  - `lr_mult=3.0`: unstable. It was merely behind through step `650`, then collapsed: step `700` eval `4.9065`, drop `28.1%`, grad norm about `1.2e6`; step `750` eval `10.5643`, drop `55.9%`, entropy `0.263`; stopped before the queued `5.0` probe.
+  - `lr_mult=3.0` with router peak held near the successful `2.0` run by setting base `router_adam_lr=0.0006666667`: stopped at step `668`; last/best eval `3.3044` at step `650`, not competitive. Lowering router LR alone did not rescue `3.0`.
+- Added `configs/experiments/ar_moe_old_bundle_no_lnscale.yaml` to test old-bundle without layernorm scaling while keeping QK-norm, value residual, per-head attention gating, and MoE.
+- No-layernorm-scaling probes:
+  - `lr_mult=0.8`: completed 1K. Best eval `3.1547` at step `800`, last eval `3.2438` at step `950`. This was much cleaner than layernorm-scaling-on `0.8`, but not better than layernorm-scaling-on `2.0`.
+  - `lr_mult=1.0`: stopped at step `698`; last/best eval `3.4189` at step `650`, not competitive.
+  - `lr_mult=2.0`: currently running as `ar_moe_old_bundle_no_lnscale_lr2p0_probe_1k` / W&B run id `p18cdqm3`. Latest recorded local state when this note was written: rows `475`, last train step `474`, last eval step `450`, eval `3.2942`, `-0.0775` versus plain AR MoE at the same step, drop `0.0000`, entropy `1.008`, grad norm `0.0705`.
+- Current conclusion:
+  - The old-bundle MoE recipe wants a much hotter global LR than plain baseline MoE.
+  - The best completed short-run candidate is old-bundle with layernorm scaling enabled and `lr_mult=2.0`.
+  - `lr_mult=3.0` crosses an instability boundary even when router LR is reduced.
+  - Turning off layernorm scaling helps low-LR stability, but has not yet beaten the completed `lr_mult=2.0` layernorm-scaling-on run. Finish the active no-layernorm-scaling `2.0` probe before deciding whether to promote `lr_mult=2.0` layernorm-scaling-on to a full 5.1K run.
+
 ## Remaining notes
 
 - The focused MoE/config/data-parallel tests pass. A broader stack run seen earlier had three non-MoE numerical strictness failures: chunked CE weight-gradient differed by about `9.1e-5`; BD3 blocked attention differed from dense-mask attention by about `7.4e-4`; BD3 blocked model logits differed by about `3.0e-3`.
