@@ -102,6 +102,30 @@
   - `data/climbmix_24x_newtok_8192/`
 - Run logs are intentionally not ignored by that rule; the user wants logs preserved.
 
+## MoE LR/router sweep notes
+
+- Global LR probes above `lr_mult=0.8` were stable but worse:
+  - `lr_mult=1.0`, router base LR `0.001`: last matched eval around step `950` was `3.2349` vs baseline `3.1526`.
+  - `lr_mult=1.25`, router base LR `0.001`: stable to `600`, last eval `3.4597`.
+  - `lr_mult=1.5`, router base LR `0.001`: stable until stopped, but clearly worse by step `475`.
+- At `lr_mult=1.0`, changing router LR affected routing but did not fix the loss gap:
+  - router base LR `0.0005`: best/last eval `3.3564` at step `575`.
+  - router base LR `0.002`: best/last eval `3.3570` at step `575`.
+- At `lr_mult=0.8`, short router-LR probes through `600` steps were close:
+  - router base LR `0.0005`, effective peak `0.0004`: best/last eval `3.3071` at step `575`.
+  - router base LR `0.002`, effective peak `0.0016`: best/last eval `3.3006` at step `575`.
+  - router base LR `0.005`, effective peak `0.004`: best/last eval `3.2964` at step `575`.
+- Longer validation of router base LR `0.005`:
+  - Run: `ar_moe_baseline_lr0p8_router_halftable_probe_1200`
+  - W&B run id: `fx9schci`
+  - Completed `1200` train steps, last eval at step `1150`.
+  - Step `1150`: eval `3.1005` vs original `lr0p8` eval `3.1020`, delta `-0.0014`.
+  - Mean matched eval delta after step `600`: about `-0.0010`, too small to treat as a clear win.
+  - Tail-100 step time: `0.2389s`, essentially the same as the original MoE run.
+  - Tail-100 drop mean `0.0160` vs original run tail-100 drop mean `0.0061`.
+  - Tail-100 router entropy `0.7140` vs original run tail-100 entropy `0.8118`.
+  - Conclusion: router base LR `0.005` is not obviously unstable, but it stresses routing more and only produces noise-level eval improvement. Do not promote it to a full run unless the goal is explicitly to study router dynamics.
+
 ## Remaining notes
 
 - The focused MoE/config/data-parallel tests pass. A broader stack run seen earlier had three non-MoE numerical strictness failures: chunked CE weight-gradient differed by about `9.1e-5`; BD3 blocked attention differed from dense-mask attention by about `7.4e-4`; BD3 blocked model logits differed by about `3.0e-3`.
