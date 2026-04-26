@@ -1,0 +1,6 @@
+name: climbmix_24x_newtok_8192
+train_path: data/climbmix_24x_newtok_8192/tokens/train
+eval_path: data/climbmix_24x_newtok_8192/tokens/val
+vocab_size: 8192
+mask_token_id: 8192
+

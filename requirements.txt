@@ -7,14 +7,5 @@ PyYAML>=6.0
 jaxtyping>=0.3
 wandb>=0.26
 
-# ClimbMix preparation and tokenizer inspection.
-pyarrow>=24.0
-requests>=2.32
-tokenizers>=0.22
-regex>=2026.4.4
-tqdm>=4.67
-
-# Reference/parity tests and PyTorch comparison paths.
-torch>=2.6
-einops>=0.8
+# Tests.
 pytest>=8.0

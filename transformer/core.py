@@ -1,6 +1,6 @@
 """Core building blocks: Linear, Embedding, RMSNorm, SwiGLU, softmax.
 
-Conventions chosen so weights can be copied from the PyTorch repo 1:1:
+Conventions chosen so weights use the common small-GPT layout:
 
   * Linear.weight has shape (d_out, d_in) — same as nn.Linear.
     Forward is ``x @ W.T``.
@@ -41,7 +41,7 @@ def _truncated_normal(
 
 
 class Linear(nnx.Module):
-    """Bias-less linear layer. Weight stored as (d_out, d_in) for PT parity."""
+    """Bias-less linear layer. Weight stored as (d_out, d_in)."""
 
     def __init__(
         self,
@@ -61,7 +61,7 @@ class Linear(nnx.Module):
         self.init_std = sigma
 
     def __call__(self, x: Array) -> Array:
-        return x @ self.weight.value.T
+        return x @ self.weight[...].T
 
 
 class Embedding(nnx.Module):
@@ -85,7 +85,7 @@ class Embedding(nnx.Module):
         self.init_std = sigma
 
     def __call__(self, token_ids: Int[Array, "b seq"]) -> Float[Array, "b seq d"]:
-        return self.weight.value[token_ids]
+        return self.weight[...][token_ids]
 
 
 class ValueEmbedding(nnx.Module):
@@ -146,15 +146,15 @@ class ValueEmbedding(nnx.Module):
 
     def __call__(self, token_ids: Int[Array, "b seq"]) -> Float[Array, "b seq h d"]:
         if self.split_token_id is None:
-            return self.weight.value[token_ids]
+            return self.weight[...][token_ids]
         is_split = token_ids == self.split_token_id
         safe_ids = jnp.where(is_split, 0, token_ids)
-        table_values = self.weight.value[safe_ids]
+        table_values = self.weight[...][safe_ids]
         if self.split_token_zero:
             split_values = jnp.zeros_like(table_values)
         else:
             split_values = jnp.broadcast_to(
-                self.split_weight.value,
+                self.split_weight[...],
                 table_values.shape,
             )
         return jnp.where(is_split[..., None, None], split_values, table_values)
@@ -186,7 +186,7 @@ class RMSNorm(nnx.Module):
         x_f = x.astype(jnp.float32)
         rms = jnp.sqrt(jnp.mean(x_f * x_f, axis=-1, keepdims=True) + self.eps)
         # Broadcasts on the trailing d_model axis; no manual None slicing needed.
-        y = x_f * (self.gamma.value / rms) * self.depth_scaling
+        y = x_f * (self.gamma[...] / rms) * self.depth_scaling
         return y.astype(in_dtype)
 
 

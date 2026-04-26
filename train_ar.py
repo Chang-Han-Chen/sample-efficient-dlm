@@ -2,8 +2,8 @@
 
 Usage examples:
 
-  python jax/train_ar.py --synthetic --max-steps 20
-  python jax/train_ar.py --train-path /path/tokens.npy --max-steps 200
+  python train_ar.py --synthetic --max-steps 20
+  python train_ar.py --train-path /path/tokens.npy --max-steps 200
 """
 
 from __future__ import annotations

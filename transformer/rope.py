@@ -87,11 +87,11 @@ class RotaryPositionalEmbedding(nnx.Module):
         seq_len = x.shape[-2]
 
         if token_positions is None:
-            cos = self.cos.value[:seq_len]   # (T, half)
-            sin = self.sin.value[:seq_len]
+            cos = self.cos[...][:seq_len]   # (T, half)
+            sin = self.sin[...][:seq_len]
         else:
-            cos = self.cos.value[token_positions]  # (..., T, half)
-            sin = self.sin.value[token_positions]
+            cos = self.cos[...][token_positions]  # (..., T, half)
+            sin = self.sin[...][token_positions]
 
         # Insert size-1 axes immediately *before* the seq axis (position -2
         # in cos/sin, which has a trailing `half` axis). Each insertion adds

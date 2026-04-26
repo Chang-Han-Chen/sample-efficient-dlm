@@ -1,17 +1,17 @@
-"""Data-parallel parity tests on simulated multi-CPU devices.
+"""Data-parallel consistency tests on simulated multi-CPU devices.
 
 These tests exercise the multi-GPU code path on a single host by forcing
 JAX to expose multiple CPU devices via XLA_FLAGS. Run with:
 
     XLA_FLAGS=--xla_force_host_platform_device_count=2 \
-        python jax/tests/test_data_parallel_parity.py
+        python tests/test_data_parallel.py
 
 The tests are split into AR and MDLM:
 
-* AR: one-step parity between a single-device run on the full global batch
+* AR: one-step equivalence between a single-device run on the full global batch
   and a 2-device DP run on the sharded batch. Loss, grads, and post-update
   params must agree.
-* MDLM: same parity check, but with intentionally uneven supervise masks
+* MDLM: same consistency check, but with intentionally uneven supervise masks
   across the two shards. This is the load-bearing test for the sum-form
   reduction under a fixed expected-mask denominator.
 * `supervised_tokens` must equal the global supervised-token count after
@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 import numpy as np
 import jax
 import jax.numpy as jnp
+import pytest
 from flax import nnx
 
 from transformer.transformer import Transformer
@@ -52,7 +53,7 @@ NUM_DEVICES = 2
 
 def _require_two_devices():
     if jax.local_device_count() < NUM_DEVICES:
-        raise SystemExit(
+        pytest.skip(
             f"this test needs {NUM_DEVICES} JAX devices; saw "
             f"{jax.local_device_count()}. Run with "
             "XLA_FLAGS=--xla_force_host_platform_device_count=2"
@@ -124,7 +125,7 @@ def _make_ar_batch(rng, batch_size: int, seq_len: int, vocab_size: int):
     return tokens[:, :-1].copy(), tokens[:, 1:].copy()
 
 
-def test_ar_single_vs_dp_parity():
+def test_ar_single_matches_data_parallel():
     _require_two_devices()
     rng = np.random.default_rng(0)
     seq_len = 16
@@ -186,13 +187,13 @@ def test_ar_single_vs_dp_parity():
             dp_arr,
             atol=1e-3,
             rtol=1e-3,
-            err_msg=f"AR DP-vs-single param mismatch at {key}",
+            err_msg=f"AR DP vs single param mismatch at {key}",
         )
 
     assert _replicated_state_leaves_equal(model_dp, opt_dp), "AR DP replicas diverged"
 
 
-def test_ar_accumulated_single_vs_dp_parity():
+def test_ar_accumulated_single_matches_data_parallel():
     _require_two_devices()
     rng = np.random.default_rng(12)
     seq_len = 16
@@ -260,7 +261,7 @@ def test_ar_accumulated_single_vs_dp_parity():
             dp_arr,
             atol=1e-3,
             rtol=1e-3,
-            err_msg=f"AR accumulated DP-vs-single param mismatch at {key}",
+            err_msg=f"AR accumulated DP vs single param mismatch at {key}",
         )
 
     assert _replicated_state_leaves_equal(model_dp, opt_dp), "AR accumulated DP replicas diverged"
@@ -292,7 +293,7 @@ def _make_mdlm_uneven_masked_batch(rng, vocab_size, seq_len, *, per_device_batch
     return inputs, targets, supervise
 
 
-def test_mdlm_uneven_mask_dp_parity():
+def test_mdlm_uneven_mask_data_parallel_matches_single():
     """Load-bearing: with uneven supervised counts across shards, the
     sum-form reduction must reproduce the single-device global objective."""
     _require_two_devices()
@@ -391,7 +392,7 @@ def test_mdlm_uneven_mask_dp_parity():
     assert _replicated_state_leaves_equal(model_dp, opt_dp), "MDLM DP replicas diverged"
 
 
-def test_mdlm_accumulated_uneven_mask_dp_parity():
+def test_mdlm_accumulated_uneven_mask_data_parallel_matches_single():
     """Covers the D x A supervised reduction path with uneven counts across
     both devices and accumulation microsteps."""
     _require_two_devices()
@@ -541,15 +542,15 @@ def test_supervised_loss_sums_basic_invariants():
 def main():
     test_supervised_loss_sums_basic_invariants()
     print("ok: supervised_loss_sums invariants")
-    test_ar_single_vs_dp_parity()
-    print("ok: AR single vs DP parity")
-    test_ar_accumulated_single_vs_dp_parity()
-    print("ok: AR accumulated single vs DP parity")
-    test_mdlm_uneven_mask_dp_parity()
-    print("ok: MDLM uneven-mask DP parity")
-    test_mdlm_accumulated_uneven_mask_dp_parity()
-    print("ok: MDLM accumulated uneven-mask DP parity")
-    print("all data-parallel parity tests passed")
+    test_ar_single_matches_data_parallel()
+    print("ok: AR single matches DP")
+    test_ar_accumulated_single_matches_data_parallel()
+    print("ok: AR accumulated single matches DP")
+    test_mdlm_uneven_mask_data_parallel_matches_single()
+    print("ok: MDLM uneven-mask DP matches single")
+    test_mdlm_accumulated_uneven_mask_data_parallel_matches_single()
+    print("ok: MDLM accumulated uneven-mask DP matches single")
+    print("all data-parallel consistency tests passed")
 
 
 if __name__ == "__main__":

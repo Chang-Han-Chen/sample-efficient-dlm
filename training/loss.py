@@ -341,7 +341,7 @@ def supervised_lm_loss(
             hidden = hidden[:, :output_length]
         loss, z_loss = linear_cross_entropy_with_z_loss_chunked(
             hidden,
-            model.lm_head.weight.value,
+            model.lm_head.weight[...],
             targets,
             chunk_size=logit_chunk_size,
             ignore_index=ignore_index,
@@ -461,7 +461,7 @@ def ar_loss(
         hidden = model(inputs, return_hidden=True)
         loss, z_loss = linear_cross_entropy_with_z_loss_chunked(
             hidden,
-            model.lm_head.weight.value,
+            model.lm_head.weight[...],
             targets,
             chunk_size=logit_chunk_size,
             ignore_index=ignore_index,

@@ -1,9 +1,15 @@
 # Token-Choice Top-1 Switch MoE Plan
 
-This plan adds an honest sparse MoE path to `jax/`: token-choice, top-1
+You are an autonomous AI researcher. **Never stop**! You have access to 2x H100 GPUs. You are in a JAX codebase about sample efficient GPT for both autoregressive and masked diffusion models. We have implemented many interventions. You probably don't need to know the details of them for this task, but later if you are stuck with some bugs and are suspicious about its root cause being these interventions, consult PLAN.md and PROGRESS.md which might have useful details. These interventions are also not new, so you should be able to search the wen for background if needed.
+
+This plan adds an honest sparse MoE path to the JAX stack: token-choice, top-1
 Switch routing over SwiGLU experts. The goal is a credible first DLM ablation:
 if performance is bad, the result should not be easy to dismiss as a toy dense
 mixture, wrong layer placement, broken router gradients, or wrong loss scaling.
+
+I'll give you a lot more details in the below, but as a rough heuristics, you should just get the loss as low as possible while keeping runtime very close to the dense models.
+At the very least you should tune the learning rates carefully before running the full 5.1K steps runs.
+
 
 ## Target Behavior
 
@@ -40,33 +46,33 @@ because it tracks the existing value-embedding convention.
 - No variable-capacity routing.
 - No nondropping fallback for overflow tokens.
 - No dense soft mixture that evaluates every expert per token.
-- No PyTorch parity requirement for MoE.
+- No PyTorch comparison requirement for MoE.
 
 The strict first-pass routing name should be boring and precise:
 `token_choice_top1_switch_swiglu`.
 
 ## Files To Touch
 
-- `jax/transformer/moe.py`: new Switch MoE module and aux helpers.
-- `jax/transformer/transformer.py`: layer placement helper, Block/Transformer
+- `transformer/moe.py`: new Switch MoE module and aux helpers.
+- `transformer/transformer.py`: layer placement helper, Block/Transformer
   MoE wiring, aux return path.
-- `jax/transformer/__init__.py`: export MoE placement helper if tests need it.
-- `jax/training/loss.py`: AR and supervised loss integration.
-- `jax/training/step.py`: train-step signatures, static argnums, denominator
+- `transformer/__init__.py`: export MoE placement helper if tests need it.
+- `training/loss.py`: AR and supervised loss integration.
+- `training/step.py`: train-step signatures, static argnums, denominator
   handling for supervised sum-form losses.
-- `jax/training/optimizer.py`: route router weights to AdamW.
-- `jax/train_ar.py`: CLI/config args, model construction, loss weights,
+- `training/optimizer.py`: route router weights to AdamW.
+- `train_ar.py`: CLI/config args, model construction, loss weights,
   logging, FLOP/MFU accounting.
 - Tests:
-  - `jax/tests/test_parity_extras.py`
-  - `jax/tests/test_training_stack.py`
-  - `jax/tests/test_diffusion_stack.py`
-  - `jax/tests/test_data_parallel_parity.py`
-  - possibly a new `jax/tests/test_moe.py`
+  - `tests/test_transformer_stack.py`
+  - `tests/test_training_stack.py`
+  - `tests/test_diffusion_stack.py`
+  - `tests/test_data_parallel.py`
+  - possibly a new `tests/test_moe.py`
 
 ## Step 1: Generalize Layer Placement
 
-Add a shared helper in `jax/transformer/transformer.py`:
+Add a shared helper in `transformer/transformer.py`:
 
 ```python
 def has_layer(layer_idx, n_layers, placement):
@@ -80,7 +86,7 @@ Required semantics:
 - `"final"` -> last layer only.
 - `"alternating"` and `"alternating_late"` -> current value-embedding behavior:
   `layer_idx % 2 == (n_layers - 1) % 2`.
-- Optional `"alternating_early"` -> opposite parity, useful later, but not the
+- Optional `"alternating_early"` -> opposite alternation, useful later, but not the
   first MoE experiment.
 - Sequence of ints -> exact 0-indexed layer set.
 
@@ -97,7 +103,7 @@ def has_moe_layer(layer_idx, n_layers, placement="alternating"):
 For `n_layers=8`, both `has_value_embedding_layer(..., "alternating")` and
 `has_moe_layer(..., "alternating")` must select `[1, 3, 5, 7]`.
 
-## Step 2: Add `jax/transformer/moe.py`
+## Step 2: Add `transformer/moe.py`
 
 Prefer a new module instead of placing MoE in `core.py`; this avoids expanding
 the already-basic core file and avoids importing `_ModuleList` from
@@ -542,7 +548,7 @@ For data-parallel supervised paths, denominator is global. The clean design is:
   scaling.
 
 If this becomes too invasive, document the first implementation's exact
-semantics and add a parity test. The intended semantics are the exact global
+semantics and add a consistency test. The intended semantics are the exact global
 coefficient semantics above.
 
 Eval helpers should keep clean CE/z-loss validation loss. They may return MoE
@@ -695,7 +701,7 @@ Loss and training:
     `loss_normalizer != valid_count`.
 19. Non-accumulated supervised train step works.
 20. Accumulated supervised train step works.
-21. Data-parallel supervised parity continues to hold, especially with uneven
+21. Data-parallel supervised consistency continues to hold, especially with uneven
     MDLM masks.
 
 Optimizer:
@@ -726,3 +732,244 @@ Trainer/config:
 - Eval loss remains clean CE/z-loss and does not include MoE regularizers.
 - Router weights do not silently go to Muon.
 - FLOP/MFU logs distinguish trainable parameters from active compute estimates.
+
+## Experiment Plan
+
+The experimental goal is not just "turn on MoE." The goal is to establish a
+credible MoE recipe in the easiest setting first, then carry that recipe into
+the DLM settings. Do not move to MDLM/BD3LM until AR MoE is clearly working.
+
+Existing dense-run logs live in W&B and should be used as the comparison
+anchors. The names are uneven, but the runs are the source of truth:
+
+```text
+AR baseline:     ar_baseline_lr0p8
+AR old-bundle:   ar_old_bundle
+AR VE:           ar_value_embedding_no_vr_nogain_lr2p0_newtok_5k1_from500
+
+MDLM baseline:   mdlm_baseline_lr0p8
+MDLM old-bundle: mdlm_old_bundle_lr0p8
+MDLM VE:         mdlm_value_embedding_no_vr_nogain_lr0p8_nomaskvec_5k1
+```
+
+All MoE runs should also be logged to W&B. The current `train_ar.py` already
+supports W&B logging, resolved config upload, JSONL logging, and checkpoint
+metadata; use those paths rather than inventing separate experiment tracking.
+
+Use this ladder:
+
+1. AR baseline dense vs AR baseline MoE.
+2. AR old-bundle + value embedding dense vs AR old-bundle + value embedding MoE.
+3. MDLM dense vs MDLM MoE with the same intervention bundle.
+4. BD3LM MoE smoke/transfer check after AR and MDLM MoE are both working.
+
+For each stage, tune MoE until it beats the matching dense baseline at similar
+wall time, or until diagnostics show a real limitation rather than a bad first
+recipe. Do not spend time reconstructing BD3LM dense baselines first; if MoE
+beats both AR and MDLM convincingly, BD3LM is expected to benefit too.
+
+### Stage 1: AR Baseline MoE
+
+Start with the plain AR baseline, no old-bundle/value-embedding interventions.
+The comparison should be:
+
+```text
+AR dense baseline: ar_baseline_lr0p8
+AR token-choice top-1 Switch MoE baseline
+```
+
+Keep wall time similar. MoE has more trainable parameters, so wall time is the
+first fairness anchor; active compute estimates are useful context, but the
+first target is "better loss for similar elapsed training time."
+
+Initial MoE config:
+
+```yaml
+objective: ar
+moe: true
+moe_routing: token_choice_switch
+moe_top_k: 1
+moe_layers: alternating
+moe_num_experts: 4
+moe_expert_d_ff: null
+moe_capacity_factor: 1.25
+moe_use_router_prob: true
+moe_drop_tokens: true
+moe_router_dtype: float32
+moe_load_balance_loss_weight: 0.01
+moe_router_z_loss_weight: 0.001
+```
+
+Tune in this order:
+
+1. `moe_capacity_factor`: try `1.25`, then `1.5`, then `2.0` if drops are
+   nontrivial. The first quality run should prefer low drops over peak speed.
+2. `moe_load_balance_loss_weight`: try `0.003`, `0.01`, `0.03`.
+3. `moe_router_z_loss_weight`: try `0.0`, `0.0003`, `0.001`, `0.003`.
+4. `moe_num_experts`: start at `4`; try `8` after the 4-expert recipe is stable.
+5. `moe_expert_d_ff`: if wall time is too high, try a smaller expert FFN such as
+   `d_ff / 2`; if wall time is similar and quality lags, keep full `d_ff`.
+6. Router Adam LR: tune separately from scalar/table Adam if router entropy or
+   expert balance is unstable.
+
+Do not judge the MoE result if any of these are true:
+
+- `moe_dropped_fraction` stays high for many steps.
+- Expert fraction min/max indicates collapse.
+- Router entropy collapses early and never recovers.
+- Router z-loss explodes.
+- Router gradients are effectively zero.
+- The MoE run is much slower than dense and not adjusted back to similar wall
+  time.
+
+Move to Stage 2 only when AR MoE beats the AR dense baseline by a meaningful
+margin at comparable wall time.
+
+### Stage 2: AR Old-Bundle + Value Embedding MoE
+
+After AR baseline MoE works, turn on the full intervention bundle being used for
+the stronger dense AR run. This means the old-bundle-style attention/normalization
+interventions plus value embedding, matching the dense comparison as closely as
+possible.
+
+Comparison:
+
+```text
+AR dense old-bundle: ar_old_bundle
+AR dense value embedding: ar_value_embedding_no_vr_nogain_lr2p0_newtok_5k1_from500
+AR MoE old-bundle + value embedding
+```
+
+Keep MoE and value embeddings colocated:
+
+```yaml
+value_embedding: true
+value_embedding_layers: alternating
+moe: true
+moe_layers: alternating
+```
+
+Use the best Stage 1 MoE recipe as the starting point. Then retune only the
+smallest necessary set of knobs:
+
+- capacity factor
+- load-balancing loss weight
+- router z-loss weight
+- router Adam LR
+- expert count if the 4-expert recipe has clear headroom
+
+The target is again to beat the matching dense model at similar wall time. If
+AR baseline MoE works but AR intervention-bundle MoE does not, inspect whether
+value embeddings and MoE colocated on the same layers changed router entropy,
+expert balance, or drop rate.
+
+Move to DLM only after this stage has a stable MoE recipe that improves over the
+dense old-bundle + value embedding AR run.
+
+### Stage 3: MDLM MoE
+
+Now repeat the same dense-vs-MoE comparison for MDLM.
+
+Comparison:
+
+```text
+MDLM dense baseline: mdlm_baseline_lr0p8
+MDLM dense old-bundle: mdlm_old_bundle_lr0p8
+MDLM dense value embedding: mdlm_value_embedding_no_vr_nogain_lr0p8_nomaskvec_5k1
+MDLM MoE old-bundle + value embedding
+```
+
+Use the Stage 2 recipe as the first MDLM MoE config, then retune. MDLM may route
+tokens differently because masked/noisy positions are a visible state variable,
+so router diagnostics matter more here than in AR.
+
+Value-embedding mask-token rule:
+
+- The value-embedding table should not learn a normal table entry for the mask
+  token.
+- Use the existing split-mask-token support:
+
+```yaml
+value_embedding: true
+value_embedding_layers: alternating
+value_embedding_split_mask_token: true
+```
+
+- If the intended ablation is "no value embedding for mask tokens," also set:
+
+```yaml
+value_embedding_mask_vector: false
+```
+
+The current codebase supports this by routing the diffusion mask token through
+the split-token path rather than the normal value-embedding table row. With
+`value_embedding_mask_vector: false`, mask-token VE is zero instead of a
+separate trainable vector.
+
+MDLM-specific checks:
+
+- Compare at the same diffusion schedule and expected mask-rate normalizer.
+- Verify MoE aux coefficient normalization with `loss_normalizer`, not realized
+  supervised-token count.
+- Watch whether experts specialize only by masked vs unmasked token state. This
+  is not automatically bad, but if specialization is too trivial it may fail to
+  improve the language modeling signal.
+- Eval loss should remain clean CE/z-loss; do not include MoE regularizers in
+  validation loss.
+
+### Stage 4: BD3LM MoE Transfer Check
+
+Do not block on BD3LM dense results. Once AR MoE and MDLM MoE both beat their
+matching dense W&B baselines at similar wall time, run BD3LM MoE as a transfer
+check using the best MDLM recipe as the starting point. Retune capacity and
+router regularization only if routing diagnostics are unhealthy. BD3LM can feed
+a dual stream, so MoE aux is computed over the actual model input sequence, not
+just the supervised clean/noisy output slice. That is intended, but it makes
+routing diagnostics especially important.
+
+Use the same value-embedding mask-token rule as MDLM:
+
+```yaml
+value_embedding: true
+value_embedding_layers: alternating
+value_embedding_split_mask_token: true
+```
+
+and optionally:
+
+```yaml
+value_embedding_mask_vector: false
+```
+
+BD3LM-specific checks:
+
+- Track wall time with both dense and blocked BD3 attention settings if both are
+  used in the dense baseline matrix.
+- Confirm the model sequence length adjustment is reflected in MoE-aware FLOP
+  estimates.
+- Watch route balance separately from supervised-token count; BD3 dual-stream
+  inputs can make token mix very different from AR.
+
+### Reporting Template
+
+For every experiment pair, record:
+
+- objective: `ar`, `mdlm`, or `bd3lm`
+- dense config name and MoE config name
+- wall-clock time to target step
+- best eval loss and step
+- train loss at matched wall time
+- trainable params
+- active compute parameter estimate
+- tokens/sec
+- MoE dropped fraction
+- MoE router entropy
+- MoE load-balance loss
+- MoE router z-loss
+- expert fraction min/max/std
+- router prob fraction min/max/std
+- seed
+
+A MoE run is considered ready to move forward only if it beats the matching
+dense run without unhealthy routing diagnostics and without relying on a large
+wall-time advantage.

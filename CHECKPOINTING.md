@@ -202,12 +202,9 @@ menu — they're all "keep *these* values, drop *those*" predicates.
   backward.
 
 In your code today, `nnx.remat(block)` inside the transformer loop is
-the clean, minimal version. The tests under `jax/tests/` are designed to
-verify this: `test_parity_extras.py` checks that the forward with
-`num_grad_checkpoint_layers=2` matches the uncheckpointed forward to
-float32 roundoff, and `test_training.py` runs a few `nnx.jit` +
-`nnx.value_and_grad` steps with checkpointing on to confirm gradients
-flow through the remat boundary. Rerun those after any structural
-changes to the `Transformer`; the parity test builds both a PT and a
-JAX model and compares logits layer-by-layer, which is the cheapest
-safety net we have.
+the clean, minimal version. The JAX-only tests under `tests/` are designed to
+verify this: `test_transformer_stack.py` checks that the forward with
+`num_grad_checkpoint_layers=2` matches the uncheckpointed forward to float32
+roundoff, and runs a few `nnx.jit` + `nnx.value_and_grad` steps with
+checkpointing on to confirm gradients flow through the remat boundary. Rerun
+those after any structural changes to the `Transformer`.

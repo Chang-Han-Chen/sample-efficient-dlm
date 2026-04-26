@@ -209,8 +209,8 @@ class MultiHeadSelfAttention(nnx.Module):
                 dtype=dtype,
                 init_std=linear_init_std,
             )
-            self.value_embedding_gate.weight.value = jnp.zeros_like(
-                self.value_embedding_gate.weight.value
+            self.value_embedding_gate.weight[...] = jnp.zeros_like(
+                self.value_embedding_gate.weight[...]
             )
 
         if self.gating:
@@ -244,9 +244,9 @@ class MultiHeadSelfAttention(nnx.Module):
         if self.fuse_qkv:
             qkv_weight = jnp.concatenate(
                 [
-                    self.W_q.weight.value,
-                    self.W_k.weight.value,
-                    self.W_v.weight.value,
+                    self.W_q.weight[...],
+                    self.W_k.weight[...],
+                    self.W_v.weight[...],
                 ],
                 axis=0,
             )
@@ -277,10 +277,10 @@ class MultiHeadSelfAttention(nnx.Module):
         # --- Value residual ---------------------------------------------
         if self.value_residual:
             v1 = v_raw if v1 is None else v1
-            denom = jnp.sqrt(self.alpha1.value ** 2 + self.alpha2.value ** 2 + 1e-8)
+            denom = jnp.sqrt(self.alpha1[...] ** 2 + self.alpha2[...] ** 2 + 1e-8)
             v = (
-                self.scale.value
-                * (self.alpha1.value * v_raw + self.alpha2.value * v1)
+                self.scale[...]
+                * (self.alpha1[...] * v_raw + self.alpha2[...] * v1)
                 / denom
             ).astype(v_raw.dtype)
         else:
@@ -298,13 +298,13 @@ class MultiHeadSelfAttention(nnx.Module):
             gate = gate[..., None].astype(v.dtype)
             gain = jnp.asarray(self.value_embedding_scale, dtype=jnp.float32)
             if self.value_embedding_gain_enabled:
-                gain = gain * self.value_embedding_gain.value.astype(jnp.float32)
+                gain = gain * self.value_embedding_gain[...].astype(jnp.float32)
             gain = gain.astype(v.dtype)
             v = v + gain * gate * value_emb
 
         # --- QK-norm -----------------------------------------------------
         if self.qknorm:
-            q = rms_normalize_last_dim(q) * self.qk_scale.value.astype(q.dtype)
+            q = rms_normalize_last_dim(q) * self.qk_scale[...].astype(q.dtype)
             k = rms_normalize_last_dim(k)
 
         # --- Scaled dot-product attention (causal) ----------------------

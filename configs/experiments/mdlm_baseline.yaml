@@ -2,10 +2,10 @@ name: mdlm_baseline
 description: MDLM baseline on the shared JAX backbone with old architecture interventions off.
 tags: [mdlm, baseline, seq512, vocab8192]
 base_configs:
-  data: jax/configs/data/climbmix_8192.yaml
-  model: jax/configs/model/gpt_small_70m.yaml
-  optimizer: jax/configs/optimizer/normuon_adamw.yaml
-  schedule: jax/configs/schedule/ws_100_5k.yaml
+  data: configs/data/climbmix_smoke_8192.yaml
+  model: configs/model/gpt_small_70m.yaml
+  optimizer: configs/optimizer/normuon_adamw.yaml
+  schedule: configs/schedule/ws_100_5k.yaml
 lr_sweep: greedy_global_lr_mult
 effective_batch_size: 512
 train_args:

@@ -1,8 +1,8 @@
 """NorMuon+AdamW optimizer for Flax NNX models.
 
-The grouping follows the role-based pattern in ``karpathy/train.py`` while
-keeping only three LR families for the tied-embedding JAX model. The default
-constants stay anchored to the ``pytorch/`` small-GPT optimizer recipe:
+The grouping follows the role-based pattern used during the original
+small-GPT experiments while keeping only three LR families for the
+tied-embedding JAX model:
 
 * AdamW table params: token embedding / tied lm head.
 * AdamW value-embedding params: table rows use the table LR; a split mask
@@ -95,7 +95,7 @@ def build_param_specs(model) -> nnx.State:
     flat = []
     for path, variable in nnx.to_flat_state(nnx.state(model, nnx.Param)):
         path_str = _path_to_str(path)
-        value = variable.value
+        value = variable[...]
         kind = _param_kind(path_str, value)
         flat.append((path, ParamSpec(kind=kind, path=path_str, shape=tuple(value.shape))))
     return nnx.from_flat_state(flat, cls=nnx.State)

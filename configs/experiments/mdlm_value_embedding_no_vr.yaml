@@ -2,10 +2,10 @@ name: mdlm_value_embedding_no_vr
 description: MDLM with QK-norm, per-head attention gating, layernorm scaling, and value embeddings, but no value residual.
 tags: [mdlm, value_embedding, no_value_residual, seq512, vocab8192]
 base_configs:
-  data: jax/configs/data/climbmix_8192.yaml
-  model: jax/configs/model/gpt_small_70m.yaml
-  optimizer: jax/configs/optimizer/normuon_adamw.yaml
-  schedule: jax/configs/schedule/ws_100_5k.yaml
+  data: configs/data/climbmix_24x_newtok_8192.yaml
+  model: configs/model/gpt_small_70m.yaml
+  optimizer: configs/optimizer/normuon_adamw.yaml
+  schedule: configs/schedule/ws_100_5k.yaml
 lr_sweep: carry_ar_value_embedding_no_vr_lr
 effective_batch_size: 512
 train_args:

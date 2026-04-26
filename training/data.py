@@ -41,12 +41,13 @@ class MemoryMappedTokenDataset:
         self.lengths = np.asarray([arr.shape[0] for arr in self.arrays], dtype=np.int64)
         self.offsets = np.concatenate([np.asarray([0], dtype=np.int64), np.cumsum(self.lengths)])
         self.total_length = int(self.lengths.sum())
-        self.num_start_positions = self.total_length - self.context_length - 1
+        self.num_start_positions = self.total_length - self.context_length
         if self.num_start_positions <= 0:
             raise ValueError("Dataset is shorter than context_length + 1")
 
+        span = self.context_length + 1
         self.windows = [
-            sliding_window_view(arr, self.context_length + 1)
+            sliding_window_view(arr, span) if arr.shape[0] >= span else None
             for arr in self.arrays
         ]
 
@@ -66,6 +67,8 @@ class MemoryMappedTokenDataset:
             for row in rows:
                 start = int(local[row])
                 if start + span <= arr.shape[0]:
+                    if win is None:
+                        raise RuntimeError("internal data window missing for a long-enough shard")
                     out[row] = win[start].astype(np.int32, copy=False)
                 else:
                     needed = span
@@ -90,7 +93,11 @@ class MemoryMappedTokenDataset:
 
     def iter_sequential(self, batch_size: int) -> Iterator[tuple[np.ndarray, np.ndarray]]:
         span = self.context_length + 1
-        starts = np.arange(0, self.num_start_positions - batch_size * span, batch_size * span)
+        starts = np.arange(
+            0,
+            self.total_length - batch_size * span + 1,
+            batch_size * span,
+        )
         for first in starts:
             batch_starts = first + np.arange(batch_size, dtype=np.int64) * span
             yield self._gather(batch_starts)

@@ -1,6 +1,6 @@
 """MDLM and BD3LM batch construction helpers.
 
-The training objective semantics mirror ``baby-dLM``:
+The training objective semantics mirror the original diffusion reference:
 
 * MDLM samples one timestep per sequence and trains denoising CE on masked
   positions under bidirectional attention.

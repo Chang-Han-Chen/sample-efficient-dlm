@@ -395,7 +395,10 @@ def test_training_checkpoint_roundtrip_restores_model_and_optimizer():
 
 if __name__ == "__main__":
     test_param_grouping()
-    test_value_embedding_table_uses_separate_adam_betas()
+    test_value_embedding_split_token_can_be_zero_without_param()
+    test_value_embedding_mask_uses_separate_adam_betas()
+    test_value_embedding_mask_uses_separate_adam_lr()
+    test_normuon_adamw_update_exercises_both_optimizer_paths()
     test_normuon_adamw_train_step_decreases_fixed_batch_loss()
     test_gradient_accumulation_train_step_decreases_fixed_batch_loss()
     test_chunked_linear_ce_matches_full_value_and_grad()

@@ -1,9 +1,9 @@
 # PLAN: Ablation Matrix for an Efficient Language Diffusion Model Backbone
 
 This plan picks up after the JAX bring-up is complete. The training stack,
-optimizer, data pipeline, parity checks against PyTorch, and seq-512 profiling
-are all in place (see `PROGRESS.md`). The next phase is the controlled
-ablation matrix that answers the project's core scientific question.
+optimizer, data pipeline, JAX regression tests, and seq-512 profiling are all
+in place (see `PROGRESS.md`). The next phase is the controlled ablation matrix
+that answers the project's core scientific question.
 
 This document is written for a future AI agent. Keep working independently
 through the experiment matrix below until each phase has a documented winner
@@ -29,17 +29,14 @@ recommendation we can defend.
 
 ## Repository Map
 
-- `jax/` — active code. Backbone, optimizer, data, training, diffusion,
-  configs, tests. This is where all experiments live now.
-- `jax/configs/experiments/` — canonical experiment configs. New runs MUST be
+- `transformer/` — active JAX backbone code.
+- `training/` — active JAX data, diffusion, loss, optimizer, and step code.
+- `configs/experiments/` — canonical experiment configs. New runs MUST be
   added here; do not rely on CLI flags as the source of truth.
-- `pytorch/` — reference autoregressive implementation. Keep only for parity
-  reference and historical comparison.
-- `baby-dLM/` — PyTorch MDLM/BD3LM reference. Consult for diffusion semantics
-  when in doubt; the upstream BD3LMs repo
-  (https://github.com/kuleshov-group/bd3lms.git) is the higher-fidelity
-  source.
-- `karpathy/` — reference data prep and training notes.
+- `tests/` — JAX-only regression tests for configs, data, transformer,
+  training, diffusion, and data-parallel behavior.
+- `train_ar.py` — main training entrypoint.
+- `PROGRESS.md` / `REVIEW.md` — historical notes from the earlier bring-up.
 
 ## Fixed Choices (do not re-litigate)
 
@@ -80,9 +77,8 @@ profiling or a sanity check forces a revisit, document the reason in
   combined switch, NOT a factorial axis for the AR matrix.
 - **Value embeddings**: Karpathy-style alternating-layer placement (last
   layer always included). Normalize the value-residual mixture first, then
-  add token value embeddings on top. See `jax/transformer/transformer.py`
-  for the exact formula. `gamma_ve_l=0` reproduces the no-value-embedding
-  baseline.
+  add token value embeddings on top. See `transformer/transformer.py` for the
+  exact formula. `gamma_ve_l=0` reproduces the no-value-embedding baseline.
 
 ## Hardware Plan
 
@@ -164,16 +160,16 @@ of the matrix.
 
 Run three AR configurations:
 
-1. **Baseline** — `jax/configs/experiments/ar_baseline.yaml`. Old
+1. **Baseline** — `configs/experiments/ar_baseline.yaml`. Old
    interventions off, value embeddings off. Use the default LR center
    directly (`--lr-mult 1.0`). Prior 300-step probes already established
    that `table=0.01, scalar=0.005, muon=0.04` is the best bracket here;
    do not re-sweep the baseline. The first 300 steps of this run double as
    the Phase 0 W&B round-trip target for the AR path.
-2. **Old bundle** — `jax/configs/experiments/ar_old_bundle.yaml`. QK-norm
+2. **Old bundle** — `configs/experiments/ar_old_bundle.yaml`. QK-norm
    + value residual + per-head gating + layernorm/depth scaling.
 3. **Old bundle + value embeddings** —
-   `jax/configs/experiments/ar_value_embedding.yaml`.
+   `configs/experiments/ar_value_embedding.yaml`.
 
 Configs 2 and 3 may need a small LR check because the architecture change
 can shift the useful LR. Probe `--lr-mult ∈ [0.5, 1.0, 2.0]` for 300 steps
@@ -321,7 +317,7 @@ Part 1 is done when:
    resolved-on-the-fly), and produced the recommended LDM
    backbone+optimizer recipe in `PROGRESS.md`.
 5. All experiment configs are committed under
-   `jax/configs/experiments/`, and resolved configs are saved with their
+   `configs/experiments/`, and resolved configs are saved with their
    checkpoints.
 6. Any divergence between AR-winning and MDLM-winning configurations is
    documented with a hypothesis.
@@ -342,8 +338,8 @@ Part 1 is done when:
 - For long runs across VM reboots, set `JAX_COMPILATION_CACHE_DIR` to a
   persistent path so compile cost is paid only once per static-arg key
   for the entire matrix.
-- When in doubt about diffusion semantics, consult `baby-dLM/` first, then
-  the upstream BD3LMs repo. Do not re-derive from scratch.
+- When in doubt about diffusion semantics, document any intentional deviation
+  from the current JAX implementation before launching long runs.
 - Git is handled by the user. Do not automate commits or pushes.
 - Persistent volume setup is not required during ablation runs; local
   `data/` and checkpoint paths on the VM are acceptable. Move artifacts to
