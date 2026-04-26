@@ -148,12 +148,29 @@
 - No-layernorm-scaling probes:
   - `lr_mult=0.8`: completed 1K. Best eval `3.1547` at step `800`, last eval `3.2438` at step `950`. This was much cleaner than layernorm-scaling-on `0.8`, but not better than layernorm-scaling-on `2.0`.
   - `lr_mult=1.0`: stopped at step `698`; last/best eval `3.4189` at step `650`, not competitive.
-  - `lr_mult=2.0`: currently running as `ar_moe_old_bundle_no_lnscale_lr2p0_probe_1k` / W&B run id `p18cdqm3`. Latest recorded local state when this note was written: rows `475`, last train step `474`, last eval step `450`, eval `3.2942`, `-0.0775` versus plain AR MoE at the same step, drop `0.0000`, entropy `1.008`, grad norm `0.0705`.
+  - `lr_mult=2.0`: completed 1K as `ar_moe_old_bundle_no_lnscale_lr2p0_probe_1k` / W&B run id `p18cdqm3`. Last/best eval `3.0621` at step `950`, `-0.0905` better than plain AR MoE at the same step. This essentially tied the best layernorm-scaling-on `2.0` run (`3.0599`) while keeping routing very clean: drop `0.0000`, entropy `1.019`, pre-clip grad norm `0.0392`.
 - Current conclusion:
   - The old-bundle MoE recipe wants a much hotter global LR than plain baseline MoE.
-  - The best completed short-run candidate is old-bundle with layernorm scaling enabled and `lr_mult=2.0`.
+  - The two best completed short-run candidates are old-bundle `lr_mult=2.0` with layernorm scaling enabled (`3.0599` at step `950`) and without layernorm scaling (`3.0621` at step `950`). The enabled version is ahead by only about `0.0022`, so this difference is noise-level at 1K.
   - `lr_mult=3.0` crosses an instability boundary even when router LR is reduced.
-  - Turning off layernorm scaling helps low-LR stability, but has not yet beaten the completed `lr_mult=2.0` layernorm-scaling-on run. Finish the active no-layernorm-scaling `2.0` probe before deciding whether to promote `lr_mult=2.0` layernorm-scaling-on to a full 5.1K run.
+  - Turning off layernorm scaling helps low-LR stability, but at `lr_mult=2.0` both variants are similarly strong. Use `lr_mult=2.0` as the full-run starting point; choose whether to keep layernorm scaling based on whether matching the dense old-bundle intervention bundle is more important than the slightly cleaner routing in the no-layernorm-scaling variant.
+
+## AR MoE old-bundle full-run update
+
+- Launched the layernorm-scaling-on best candidate as `ar_moe_old_bundle_lr2p0_full_nockpt` / W&B run id `tpesv0nb`, output dir `runs/moe_matrix/ar_moe_old_bundle_lr2p0_full_nockpt`.
+- Command shape: `configs/experiments/ar_moe_old_bundle.yaml`, `--max-steps 5100`, `--warmup-steps 100`, `--lr-mult 2.0`, checkpoint saving disabled to match the successful 1K probes.
+- Effective LR peaks for this run: table Adam `0.020`, value-embedding/mask Adam group `0.020` even though value embeddings are off, scalar Adam `0.010`, router Adam `0.002`, Muon `0.080`.
+- Latest local log snapshot: last train step `2969`, last eval step `2950`, last eval loss `2.8385`; best eval so far `2.8363` at step `2800`.
+- Wall time per step: mean `0.2644s`, median `0.2555s` after the first few steps. This is close to the 1K old-bundle probe timing and slower than the plain AR MoE baseline's `0.2370s` mean / `0.2313s` median.
+- Recent matched-step comparison versus the completed plain AR MoE baseline `ar_moe_baseline_lr0p8`:
+  - Step `2500`: old-bundle `2.8589` vs plain `2.9136`, delta `-0.0546`.
+  - Step `2550`: old-bundle `2.8865` vs plain `2.9436`, delta `-0.0571`.
+  - Step `2800`: old-bundle `2.8363` vs plain `2.8876`, delta `-0.0512`.
+  - Step `2950`: old-bundle `2.8385` vs plain `2.8921`, delta `-0.0536`.
+- Routing in the healthy full run is clean in the recent window: drop is usually `0.0000` to `0.0032`, router entropy is about `0.84` to `0.89`, and expert min/max fractions are roughly `0.21-0.23` / `0.28-0.30`.
+- There was one isolated pre-clip grad-norm spike at step `1900` (`5.23e9`) without an accompanying routing collapse or eval regression. Subsequent grad norms returned to the normal `0.03-0.06` range.
+- Earlier failed full launch `ar_moe_old_bundle_lr2p0` / W&B run id `jugxbwpq` was stopped at step `708`; best eval was only `3.4017` at step `700`, with worse routing/drop behavior than the probe. Code inspection did not find a deterministic checkpoint mutation path: checkpoint save serializes copied state, and the LR schedule depends on `step`/`warmup_steps`, not `max_steps`. Current working hypothesis is MoE top-1 route sensitivity and nondeterminism, possibly amplified by sync/timing differences, not a direct checkpointing math bug.
+- Do not judge final ranking yet: the plain AR MoE full run eventually reached best eval `2.8062` at step `4800` and last eval `2.8380` at step `5050`. The old-bundle full run is clearly ahead at matched mid-run steps, but it still needs to finish.
 
 ## Remaining notes
 
