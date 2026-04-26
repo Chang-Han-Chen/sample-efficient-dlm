@@ -12,6 +12,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from transformer.core import ValueEmbedding
 from transformer.transformer import Transformer
 from training.optimizer import (
     NormuonAdamWConfig,
@@ -80,6 +81,42 @@ def test_param_grouping():
     split_ve_specs = build_param_specs(split_ve_model)
     assert split_ve_specs["blocks"][1]["attn"]["value_embedding_table"]["weight"].kind == "adam_ve_table"
     assert split_ve_specs["blocks"][1]["attn"]["value_embedding_table"]["split_weight"].kind == "adam_ve_mask"
+
+
+def test_value_embedding_split_token_can_be_zero_without_param():
+    ve = ValueEmbedding(
+        nnx.Rngs(12),
+        vocab_size=8,
+        n_kv_heads=2,
+        head_dim=4,
+        d_model=16,
+        split_token_id=7,
+        split_token_zero=True,
+        dtype=jnp.float32,
+    )
+    token_ids = jnp.asarray([[1, 7, 2]], dtype=jnp.int32)
+    values = ve(token_ids)
+    np.testing.assert_allclose(np.asarray(values[:, 1]), 0.0, atol=0.0)
+    assert float(jnp.linalg.norm(values[:, 0])) > 0.0
+
+    model = Transformer(
+        nnx.Rngs(13),
+        n_layers=2,
+        vocab_size=33,
+        d_model=64,
+        n_heads=4,
+        d_ff=128,
+        value_embedding=True,
+        value_embedding_split_token_id=32,
+        value_embedding_split_token_zero=True,
+        dtype=jnp.float32,
+    )
+    param_paths = {
+        ".".join(str(part) for part in path)
+        for path, _ in nnx.to_flat_state(nnx.state(model, nnx.Param))
+    }
+    assert "blocks.1.attn.value_embedding_table.weight" in param_paths
+    assert "blocks.1.attn.value_embedding_table.split_weight" not in param_paths
 
 
 def test_value_embedding_mask_uses_separate_adam_betas():

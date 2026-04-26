@@ -107,6 +107,7 @@ class ValueEmbedding(nnx.Module):
         dtype: jnp.dtype = jnp.float32,
         init_std: float | None = None,
         split_token_id: int | None = None,
+        split_token_zero: bool = False,
     ):
         std = float(init_std if init_std is not None else d_model**-0.5)
         limit = (3.0 ** 0.5) * std
@@ -126,20 +127,22 @@ class ValueEmbedding(nnx.Module):
         self.dtype = dtype
         self.init_std = std
         self.split_token_id = None if split_token_id is None else int(split_token_id)
+        self.split_token_zero = bool(split_token_zero)
         if self.split_token_id is not None:
             if self.split_token_id < 0 or self.split_token_id >= vocab_size:
                 raise ValueError(
                     f"split_token_id={self.split_token_id} must be in [0, {vocab_size})"
                 )
-            self.split_weight = nnx.Param(
-                jax.random.uniform(
-                    rngs.params(),
-                    (n_kv_heads, head_dim),
-                    minval=-limit,
-                    maxval=limit,
-                    dtype=dtype,
+            if not self.split_token_zero:
+                self.split_weight = nnx.Param(
+                    jax.random.uniform(
+                        rngs.params(),
+                        (n_kv_heads, head_dim),
+                        minval=-limit,
+                        maxval=limit,
+                        dtype=dtype,
+                    )
                 )
-            )
 
     def __call__(self, token_ids: Int[Array, "b seq"]) -> Float[Array, "b seq h d"]:
         if self.split_token_id is None:
@@ -147,10 +150,13 @@ class ValueEmbedding(nnx.Module):
         is_split = token_ids == self.split_token_id
         safe_ids = jnp.where(is_split, 0, token_ids)
         table_values = self.weight.value[safe_ids]
-        split_values = jnp.broadcast_to(
-            self.split_weight.value,
-            table_values.shape,
-        )
+        if self.split_token_zero:
+            split_values = jnp.zeros_like(table_values)
+        else:
+            split_values = jnp.broadcast_to(
+                self.split_weight.value,
+                table_values.shape,
+            )
         return jnp.where(is_split[..., None, None], split_values, table_values)
 
 

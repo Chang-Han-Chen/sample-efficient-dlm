@@ -6,9 +6,9 @@ profiling, or conclusions change materially.
 
 ## Current Objective
 
-Run the MDLM value-embedding/no-value-residual transfer check after the AR
-matrix showed that the stable value-embedding variant is competitive with the
-tuned baseline but behind the old bundle.
+Finish and evaluate the active MDLM value-embedding/no-value-residual run. The
+current run is ahead of the tuned MDLM baseline through about 3.1K steps, but
+still behind the MDLM old-bundle run.
 
 ## User Decisions
 
@@ -21,13 +21,15 @@ tuned baseline but behind the old bundle.
 - Treat the "old architecture" profile as QK-norm + value residual +
   layernorm/depth scaling + per-head attention gating, with weight tying still
   enabled.
-- Treat MDLM peak LRs as likely shared with the AR-selected LR family unless a
-  run becomes unstable. Do not spend time on a separate MDLM LR sweep; use only
-  short sanity probes when changing model/objective shape.
-- For the next MDLM run, transfer the AR value-embedding/no-value-residual
-  recipe directly: QK-norm on, per-head attention gating on,
-  layernorm/depth scaling on, value embedding on, value residual off,
-  value-embedding gain off, `lr_mult=2.0`, scalar Adam base LR `0.0005`.
+- Current best MDLM value-embedding/no-value-residual recipe:
+  QK-norm on, per-head attention gating on, layernorm/depth scaling on,
+  value embedding on, value residual off, value-embedding gain off,
+  split mask-token value embedding on, `lr_mult=0.8`, table Adam base LR
+  `0.01`, mask-vector Adam base LR `0.005`, scalar Adam base LR `0.0005`,
+  Muon base LR `0.04`.
+- Keep the active MDLM VE/no-VR run going unless it clearly falls behind the
+  tuned baseline `mdlm_baseline_lr0p8`. If it finishes behind baseline, test
+  removing the separate mask VE vector; if that also fails, tune LR.
 
 ## Implemented Backbone Features
 
@@ -88,6 +90,81 @@ tuned baseline but behind the old bundle.
 - `train_ar.py` sets `XLA_PYTHON_CLIENT_PREALLOCATE=false` before importing
   JAX so `nvidia-smi` memory readings are meaningful.
 - MFU estimates use A100 SXM dense BF16 peak `312e12` FLOP/s.
+
+## MDLM Value-Embedding Status, 2026-04-26
+
+Key implementation change:
+
+- MDLM value embeddings were slow with the mask token inside the shared
+  value-embedding table. Because MDLM masks most positions, the VE backward path
+  repeatedly scattered into the single mask-token row across devices. Splitting
+  the mask token into its own `split_weight` parameter fixed the progressive
+  slowdown while preserving expressivity.
+- Final optimizer routing for this variant:
+  - input embedding / LM head: table Adam
+  - regular value-embedding table: table Adam
+  - mask-token value-embedding vector: separate Adam LR
+  - non-table matrices, including VE gates: Muon
+  - scalars/vectors: scalar Adam
+- Tests passed after the split-mask change and optimizer routing updates:
+  `JAX_PLATFORMS=cpu python -m pytest jax/tests/test_training_stack.py -q`.
+
+Speed findings:
+
+- Unsplit MDLM VE/no-VR slowed during training to roughly `3s/step` on the
+  2xA100 setup.
+- Split-mask MDLM VE/no-VR runs at roughly `1.0-1.2s/step` with batch `512`
+  over 2 GPUs, matching the desired MDLM throughput envelope.
+
+Short LR probes at fixed `lr_mult=0.8` for split-mask MDLM VE/no-VR:
+
+| mask Adam base LR | result |
+|---:|---|
+| `0.010` | completed 500 steps, eval `3.9242` |
+| `0.005` | completed 500 steps, eval `3.8611`; best short probe |
+| `0.004` | rejected; spiked to eval `5.9235` at step 250 |
+| `0.0025` | rejected early; behind `0.005` |
+| `0.0075` | rejected early; unstable/worse |
+
+Active long run:
+
+- Run name: `mdlm_value_embedding_no_vr_nogain_lr0p8_maskadam0p005_5k1`.
+- W&B id: `r6z0xsbq`.
+- Output: `runs/mdlm_matrix/mdlm_value_embedding_no_vr_nogain_lr0p8_maskadam0p005_5k1`.
+- Config: MDLM, value embedding on, value residual off, VE gain off,
+  split mask-token VE on, `lr_mult=0.8`,
+  `value_embedding_mask_adam_lr=0.005`, effective batch `512`,
+  2 data-parallel A100s.
+- Checkpointing: best and final checkpoints enabled.
+- Monitoring status at step `3120`: latest eval step `3100` was `3.2320`;
+  grad norm was normal (`~0.36` on the latest train row), and both GPUs were
+  active at about `62GB` each.
+
+Matched-step comparison against W&B references:
+
+| step | VE/no-VR split-mask | baseline `mdlm_baseline_lr0p8` | old bundle `mdlm_old_bundle_lr0p8` |
+|---:|---:|---:|---:|
+| 500 | `3.8379` | `3.8346` | `3.7159` |
+| 1000 | `3.6539` | `3.5736` | `3.4652` |
+| 1500 | `3.4423` | `3.4673` | `3.3582` |
+| 2000 | `3.3938` | `3.4224` | `3.3133` |
+| 2500 | `3.2872` | `3.3371` | `3.2119` |
+| 3000 | `3.2701` | `3.3050` | `3.1899` |
+| 3100 | `3.2320` | no exact point fetched | no exact point fetched |
+
+Interpretation:
+
+- The active split-mask VE/no-VR run was behind the tuned baseline early, but
+  crossed it around the 1.5K-step region and is ahead of baseline through the
+  latest matched 3K comparison.
+- It remains behind the old-bundle run by roughly `0.06-0.10` eval loss in the
+  2.5K-3K region.
+- Stability is currently good. Early isolated grad spikes occurred before 700
+  steps, but recent windows are clean: recent grad p95 has been about
+  `0.4`, and recent max grad norm was below `1` in the 2.5K-3K checks.
+- Decision: keep the active run going unless it clearly falls behind baseline.
+  Do not switch to a no-mask-vector experiment while this run remains
+  competitive with or ahead of baseline.
 
 ## Initial Pre-Fusion Profiles
 

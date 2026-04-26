@@ -125,6 +125,7 @@ class MultiHeadSelfAttention(nnx.Module):
         value_embedding_gate_channels: int = 32,
         value_embedding_init_std: float | None = None,
         value_embedding_split_token_id: int | None = None,
+        value_embedding_split_token_zero: bool = False,
         gating: str | bool | None = False,
         is_causal: bool = True,
         attention_impl: AttentionImpl = None,
@@ -199,6 +200,7 @@ class MultiHeadSelfAttention(nnx.Module):
                 dtype=dtype,
                 init_std=value_embedding_init_std,
                 split_token_id=value_embedding_split_token_id,
+                split_token_zero=value_embedding_split_token_zero,
             )
             self.value_embedding_gate = Linear(
                 rngs,

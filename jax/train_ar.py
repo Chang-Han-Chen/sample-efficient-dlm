@@ -117,6 +117,13 @@ def parse_args():
     p.set_defaults(value_embedding_gain=True)
     p.add_argument("--value-embedding-gain-init", type=float, default=0.0)
     p.add_argument("--value-embedding-split-mask-token", action="store_true")
+    p.add_argument(
+        "--no-value-embedding-mask-vector",
+        dest="value_embedding_mask_vector",
+        action="store_false",
+        help="When splitting the diffusion mask token out of the VE table, use zero VE for mask tokens instead of a trainable vector.",
+    )
+    p.set_defaults(value_embedding_mask_vector=True)
     p.add_argument("--weight-tying", dest="weight_tying", action="store_true")
     p.add_argument("--no-weight-tying", dest="weight_tying", action="store_false")
     p.set_defaults(weight_tying=True)
@@ -552,6 +559,11 @@ def main():
             if args.value_embedding_split_mask_token and diffusion_cfg is not None
             else None
         ),
+        value_embedding_split_token_zero=(
+            args.value_embedding_split_mask_token
+            and diffusion_cfg is not None
+            and not args.value_embedding_mask_vector
+        ),
         weight_tying=args.weight_tying,
         num_grad_checkpoint_layers=args.grad_checkpoint_layers,
         max_seq_len=args.context_length,
@@ -739,6 +751,7 @@ def main():
         "value_embedding_gain": args.value_embedding_gain,
         "value_embedding_gain_init": args.value_embedding_gain_init,
         "value_embedding_split_mask_token": args.value_embedding_split_mask_token,
+        "value_embedding_mask_vector": args.value_embedding_mask_vector,
         "weight_tying": args.weight_tying,
         "loss_impl": args.loss_impl,
         "logit_chunk_size": args.logit_chunk_size,
