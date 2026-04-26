@@ -113,14 +113,22 @@ class SwitchMoE(nnx.Module):
             ]
         )
 
-    def __call__(self, x: Array) -> tuple[Array, MoEAux]:
-        bsz, seq_len, d_model = x.shape
+    def __call__(self, expert_x: Array, *, router_x: Array | None = None) -> tuple[Array, MoEAux]:
+        if router_x is None:
+            router_x = expert_x
+        if router_x.shape != expert_x.shape:
+            raise ValueError(
+                f"router_x shape {router_x.shape} must match expert_x shape {expert_x.shape}"
+            )
+
+        bsz, seq_len, d_model = expert_x.shape
         n_tokens = bsz * seq_len
         n_experts = self.num_experts
         capacity = max(1, int(math.ceil(self.capacity_factor * n_tokens / n_experts)))
 
-        x_flat = x.reshape((n_tokens, d_model))
-        router_logits = self.router(x_flat.astype(jnp.float32)).astype(jnp.float32)
+        expert_flat = expert_x.reshape((n_tokens, d_model))
+        router_flat = router_x.reshape((n_tokens, d_model))
+        router_logits = self.router(router_flat.astype(jnp.float32)).astype(jnp.float32)
         router_probs = jax.nn.softmax(router_logits, axis=-1)
         expert_id = jnp.argmax(router_probs, axis=-1).astype(jnp.int32)
         selected_prob = jnp.take_along_axis(router_probs, expert_id[:, None], axis=-1)[:, 0]
@@ -131,9 +139,9 @@ class SwitchMoE(nnx.Module):
         valid = slot < capacity
         safe_slot = jnp.where(valid, slot, 0)
 
-        expert_inputs = jnp.zeros((n_experts, capacity, d_model), dtype=x.dtype)
+        expert_inputs = jnp.zeros((n_experts, capacity, d_model), dtype=expert_x.dtype)
         expert_inputs = expert_inputs.at[expert_id, safe_slot].add(
-            x_flat * valid[:, None].astype(x.dtype)
+            expert_flat * valid[:, None].astype(expert_x.dtype)
         )
         expert_outputs = jnp.stack(
             [self.experts[e](expert_inputs[e]) for e in range(n_experts)],

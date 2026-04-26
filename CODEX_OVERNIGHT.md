@@ -171,7 +171,51 @@
 - Earlier failed full launch `ar_moe_old_bundle_lr2p0` / W&B run id `jugxbwpq` was stopped at step `708`; best eval was only `3.4017` at step `700`, with worse routing/drop behavior than the probe. Code inspection did not find a deterministic checkpoint mutation path: checkpoint save serializes copied state, and the LR schedule depends on `step`/`warmup_steps`, not `max_steps`. Current working hypothesis is MoE top-1 route sensitivity and nondeterminism, possibly amplified by sync/timing differences, not a direct checkpointing math bug.
 - Current conclusion: old-bundle with layernorm scaling and `lr_mult=2.0` is the best completed AR MoE run so far. It improves eval over the plain AR MoE baseline by about `0.05` at best eval, at roughly `10-12%` higher step time.
 
+## Split-router LayerNorm-scaling MoE probe
+
+- Implemented the proposed MoE split:
+  - Attention remains unchanged: `attn(RMSNorm(x) * depth_scale)`.
+  - Dense FFN remains unchanged: `ffn(RMSNorm(x) * depth_scale)`.
+  - MoE now routes on unscaled `RMSNorm(x)` but computes experts on `depth_scale * RMSNorm(x)`.
+- Code shape:
+  - `SwitchMoE.__call__(expert_x, *, router_x=None)` uses `router_x` for router logits/probs/top-1/aux losses and `expert_x` for dispatch into SwiGLU experts.
+  - MoE `Block.ln2` is unscaled when `layernorm_scaling` is enabled; the depth scale is stored separately as `moe_expert_input_scale` and applied only to the expert input.
+  - Router-prob gating is unchanged; no mean-normalized gate was added yet.
+- Tests:
+  - `pytest -q tests/test_moe.py`: `10 passed`, one existing pytest config warning.
+- First probe used the same trusted old-bundle config as the completed full run, but only for 1K steps: `ar_moe_old_bundle_splitrouter_lr2p0_probe_1k` / W&B run id `wvwbwqix`, output dir `runs/moe_matrix/ar_moe_old_bundle_splitrouter_lr2p0_probe_1k`.
+  - Config: `configs/experiments/ar_moe_old_bundle.yaml`, `--max-steps 1000`, `--warmup-steps 100`, `--lr-mult 2.0`, checkpoint saving disabled.
+  - Effective LR peaks: table Adam `0.020`, scalar Adam `0.010`, router Adam `0.002`, Muon `0.080`.
+  - Best/last eval: `3.0396` at step `950`.
+  - Final matched-step routing metrics at step `950`: drop `0.0000`, router entropy `0.960`, expert fraction max `0.281`, router-prob fraction max `0.266`, pre-clip grad norm `0.0445`.
+  - Wall time after initial compile: mean `0.2645s`, median `0.2568s`.
+- Matched-step comparison at step `950`:
+  - Split-router old-bundle `lr_mult=2.0`: `3.0396`
+  - Previous layernorm-scaling old-bundle short probe: `3.0599`
+  - Previous full no-checkpoint branch at the same step: `3.1177`
+  - Plain AR MoE baseline: `3.1526`
+- Started a full `lr_mult=2.0` split-router run, then stopped it early at step `168` to bracket LR first. Its early rows were healthy: step `150` eval `3.7844`, drop `0.0000`, entropy `0.734`.
+- Bracketed split-router LR around the `2.0` anchor:
+  - `lr_mult=1.5`: stopped at step `668`. Best eval was `3.2709` at step `550`, then regressed to `3.3497` at step `650` with drop `0.0288`, entropy `0.683`, expert fraction max `0.331`, and grad norm `0.536`.
+  - `lr_mult=2.5`: stopped at step `553`. Best eval was `3.3268` at step `550`, worse than `2.0` at the same step (`3.2236`). It had a transient drop spike at step `400` (`0.0426`) and lower router entropy around `0.6-0.68`.
+- Full split-router `lr_mult=2.0` rerun result:
+  - Run: `ar_moe_old_bundle_splitrouter_lr2p0_full_nockpt_rerun`, output dir `runs/moe_matrix/ar_moe_old_bundle_splitrouter_lr2p0_full_nockpt_rerun`.
+  - Stopped after collapse at step `3500`.
+  - Best eval before collapse: `2.8282` at step `3200`.
+  - The run was competitive before collapse but noticeably less stable than the 1K smoke. Examples:
+    - step `2100`: eval `3.0120`, drop `0.0682`, entropy `0.694`, expert fraction max `0.371`
+    - step `2750`: eval `2.9339`, drop `0.0501`, entropy `0.657`, expert fraction max `0.332`
+    - step `3200`: best eval `2.8282`, drop `0.0000`, entropy `0.669`
+  - Hard collapse began immediately after that:
+    - step `3300`: eval `4.7616`, grad norm `153`, drop `0.3459`, entropy `0.385`, expert fraction max `0.655`
+    - step `3500`: eval `6.5181`, grad norm `541`, drop `0.5388`, entropy `0.190`, expert fraction max `0.835`
+  - Wall time before stop: mean `0.2637s`, median `0.2550s`.
+- Revised interpretation:
+  - The split-router architecture improved the 1K smoke (`3.0396 @950`) but did not produce a stable long run with the same optimizer settings.
+  - Principled explanation: before the split, deeper MoE routers saw `depth_scale * RMSNorm(x)`, which accidentally damped router logits and kept softmax probabilities higher entropy. After the split, routers see unscaled `RMSNorm(x)`, which removes depth-dependent router temperature coupling but also removes that accidental logit damping. With the same router LR/z-loss/gate, the router can sharpen over training, hit the top-1 capacity cliff, and collapse.
+  - Next principled variants should keep the split but add an explicit router control knob: lower router LR, explicit router temperature > 1, stronger router z-loss, or mean-normalized selected-prob gate. Do not promote the current split-router `lr_mult=2.0` recipe to a full baseline.
+
 ## Remaining notes
 
 - The focused MoE/config/data-parallel tests pass. A broader stack run seen earlier had three non-MoE numerical strictness failures: chunked CE weight-gradient differed by about `9.1e-5`; BD3 blocked attention differed from dense-mask attention by about `7.4e-4`; BD3 blocked model logits differed by about `3.0e-3`.
-- The next useful experiment is probably not another basic MoE run. If tuning, inspect whether the step-time overhead comes from token dispatch/scatter, expert matmuls, or pmap communication, then try capacity factor/router regularization changes only if the loss curve or expert/drop metrics justify it.
+- The next useful experiment is probably the full split-router old-bundle run at `lr_mult=2.0`. If tuning after that, inspect whether the step-time overhead comes from token dispatch/scatter, expert matmuls, or pmap communication, then try capacity factor/router regularization/gate normalization only if the loss curve or expert/drop metrics justify it.

@@ -116,6 +116,13 @@ class Block(nnx.Module):
         moe_drop_tokens: bool = True,
         dtype: jnp.dtype = jnp.float32,
     ):
+        self.is_moe = bool(moe)
+        self.moe_expert_input_scale = (
+            float(jax.lax.rsqrt(jnp.float32(depth_position)))
+            if self.is_moe and depth_position is not None
+            else 1.0
+        )
+
         self.ln1 = RMSNorm(rngs, d_model, dtype=dtype, depth_position=depth_position)
         self.attn = MultiHeadSelfAttention(
             rngs,
@@ -142,8 +149,12 @@ class Block(nnx.Module):
             linear_init_std=linear_init_std,
             dtype=dtype,
         )
-        self.ln2 = RMSNorm(rngs, d_model, dtype=dtype, depth_position=depth_position)
-        self.is_moe = bool(moe)
+        self.ln2 = RMSNorm(
+            rngs,
+            d_model,
+            dtype=dtype,
+            depth_position=None if self.is_moe else depth_position,
+        )
         if self.is_moe:
             self.ffn = SwitchMoE(
                 rngs,
@@ -192,7 +203,8 @@ class Block(nnx.Module):
         x = x + attn_out
         h = self.ln2(x)
         if self.is_moe:
-            ffn_out, moe_aux = self.ffn(h)
+            expert_h = h * jnp.asarray(self.moe_expert_input_scale, dtype=h.dtype)
+            ffn_out, moe_aux = self.ffn(expert_h, router_x=h)
         else:
             ffn_out = self.ffn(h)
             moe_aux = zero_moe_aux()

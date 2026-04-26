@@ -56,6 +56,72 @@ def test_switch_moe_forward_aux_and_drops_are_finite():
         assert bool(jnp.isfinite(value))
 
 
+def test_switch_moe_router_input_can_be_split_from_expert_input():
+    moe = SwitchMoE(
+        nnx.Rngs(7),
+        d_model=16,
+        d_ff=64,
+        num_experts=4,
+        capacity_factor=2.0,
+        dtype=jnp.float32,
+    )
+    rng = np.random.default_rng(7)
+    x = jnp.asarray(rng.normal(size=(2, 5, 16)).astype(np.float32))
+    y_default, aux_default = moe(x)
+    y_explicit, aux_explicit = moe(x, router_x=x)
+    np.testing.assert_allclose(np.asarray(y_default), np.asarray(y_explicit))
+    for got, expected in zip(aux_default, aux_explicit, strict=True):
+        np.testing.assert_allclose(np.asarray(got), np.asarray(expected))
+
+    expert_x = jnp.zeros_like(x)
+    router_x = x
+    y_zero_router, aux_zero_router = moe(expert_x)
+    y_split_router, aux_split_router = moe(expert_x, router_x=router_x)
+    np.testing.assert_allclose(np.asarray(y_zero_router), np.zeros_like(np.asarray(y_zero_router)))
+    np.testing.assert_allclose(np.asarray(y_split_router), np.zeros_like(np.asarray(y_split_router)))
+    assert not np.isclose(
+        float(aux_zero_router.router_z_loss),
+        float(aux_split_router.router_z_loss),
+    )
+
+
+def test_moe_layernorm_scaling_is_split_between_router_and_experts():
+    model = Transformer(
+        nnx.Rngs(8),
+        n_layers=2,
+        vocab_size=32,
+        d_model=32,
+        n_heads=4,
+        d_ff=64,
+        moe=True,
+        moe_layers="all",
+        moe_num_experts=2,
+        layernorm_scaling=True,
+        dtype=jnp.float32,
+    )
+    moe_block = model.blocks[1]
+    expected = 1.0 / np.sqrt(2.0)
+    np.testing.assert_allclose(moe_block.ln1.depth_scaling, expected, rtol=1e-6)
+    np.testing.assert_allclose(moe_block.ln2.depth_scaling, 1.0, rtol=1e-6)
+    np.testing.assert_allclose(moe_block.moe_expert_input_scale, expected, rtol=1e-6)
+
+    dense = Transformer(
+        nnx.Rngs(8),
+        n_layers=2,
+        vocab_size=32,
+        d_model=32,
+        n_heads=4,
+        d_ff=64,
+        moe=False,
+        layernorm_scaling=True,
+        dtype=jnp.float32,
+    )
+    dense_block = dense.blocks[1]
+    np.testing.assert_allclose(dense_block.ln1.depth_scaling, expected, rtol=1e-6)
+    np.testing.assert_allclose(dense_block.ln2.depth_scaling, expected, rtol=1e-6)
+    np.testing.assert_allclose(dense_block.moe_expert_input_scale, 1.0, rtol=1e-6)
+
+
 def test_switch_moe_router_and_expert_gradients_are_nonzero():
     moe = SwitchMoE(
         nnx.Rngs(1),
