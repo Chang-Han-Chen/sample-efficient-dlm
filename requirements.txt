@@ -7,5 +7,10 @@ PyYAML>=6.0
 jaxtyping>=0.3
 wandb>=0.26
 
+# Data preparation / inspection.
+pyarrow>=24.0
+requests>=2.32
+tokenizers>=0.22
+
 # Tests.
 pytest>=8.0

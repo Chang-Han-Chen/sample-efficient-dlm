@@ -17,7 +17,15 @@ aws/
 **/*.log
 **/*.sh
 **/*.ipynb
-/data/
+# Local/generated datasets stay out of git, but keep data preparation code.
+/data/*
+!/data/
+!/data/**/
+!/data/**/*.py
+!/data/**/*.md
+!/data/**/*.yaml
+!/data/**/*.yml
+!/data/**/*.toml
 data_tokenized/
 **/__pycache__
 **/.DS_Store
