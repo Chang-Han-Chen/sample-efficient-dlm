@@ -64,24 +64,154 @@
     "wandb_group": "bd3_curriculum_moe_old_bundle"
   },
   "created_at": "2026-04-27T04:47:47Z",
-  "decisions": [],
+  "decisions": [
+    {
+      "at": "2026-04-27T06:38:34Z",
+      "num_runs": 78,
+      "reason": "Operator chose to use lr_mult=2.0 for all switch probes after initial AR p030 b256 sweep.",
+      "type": "skip_non_lr2_switch_probes"
+    },
+    {
+      "added": [
+        "ar_p030_b256_lr2_full",
+        "ar_p030_b64_lr2_full",
+        "ar_p030_b16_lr2_full",
+        "ar_p030_b4_lr2_full",
+        "ar_p050_b256_lr2_full",
+        "ar_p050_b64_lr2_full",
+        "ar_p050_b16_lr2_full",
+        "ar_p050_b4_lr2_full",
+        "ar_p080_b256_lr2_full",
+        "ar_p080_b64_lr2_full",
+        "ar_p080_b16_lr2_full",
+        "ar_p080_b4_lr2_full",
+        "ar_p090_b256_lr2_full",
+        "ar_p090_b64_lr2_full",
+        "ar_p090_b16_lr2_full",
+        "ar_p090_b4_lr2_full",
+        "ar_p095_b256_lr2_full",
+        "ar_p095_b64_lr2_full",
+        "ar_p095_b16_lr2_full",
+        "ar_p095_b4_lr2_full"
+      ],
+      "at": "2026-04-27T06:42:25Z",
+      "reason": "Operator clarified: commit to lr_mult=2.0 for all block sizes and p values; resume AR checkpoints and train BD3 continuations to total step 10100 without further LR sweep.",
+      "superseded_probes": [
+        "ar_p030_b64_lr2_probe",
+        "ar_p030_b16_lr2_probe",
+        "ar_p030_b4_lr2_probe",
+        "ar_p050_b256_lr2_probe",
+        "ar_p050_b64_lr2_probe",
+        "ar_p050_b16_lr2_probe",
+        "ar_p050_b4_lr2_probe",
+        "ar_p080_b256_lr2_probe",
+        "ar_p080_b64_lr2_probe",
+        "ar_p080_b16_lr2_probe",
+        "ar_p080_b4_lr2_probe",
+        "ar_p090_b256_lr2_probe",
+        "ar_p090_b64_lr2_probe",
+        "ar_p090_b16_lr2_probe",
+        "ar_p090_b4_lr2_probe",
+        "ar_p095_b256_lr2_probe",
+        "ar_p095_b64_lr2_probe",
+        "ar_p095_b16_lr2_probe",
+        "ar_p095_b4_lr2_probe"
+      ],
+      "type": "create_direct_lr2_ar_switch_full"
+    }
+  ],
   "experiment": "bd3_curriculum_moe_old_bundle",
   "instruction_file": "BD3_CURRICULUM_INSTRUCTIONS.md",
   "launcher": "scripts/bd3_curriculum_launcher.py",
   "repo_root": "/Users/changhanc/sample-efficient-dlm",
   "runs": [
     {
-      "attempts": 0,
+      "attempts": 1,
       "block_len": null,
       "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100/checkpoints/final",
+      "command": [
+        "/opt/conda/bin/python",
+        "train_ar.py",
+        "--config",
+        "configs/experiments/ar_moe_old_bundle.yaml",
+        "--objective",
+        "ar",
+        "--seed",
+        "42",
+        "--run-name",
+        "source_ar_to03100",
+        "--output-dir",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100",
+        "--log-jsonl",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100/train.jsonl",
+        "--max-steps",
+        "3100",
+        "--warmup-steps",
+        "100",
+        "--batch-size",
+        "512",
+        "--grad-accum-steps",
+        "1",
+        "--data-parallel",
+        "--num-devices",
+        "4",
+        "--context-length",
+        "512",
+        "--attention-impl",
+        "cudnn",
+        "--attn-val-residual",
+        "--no-moe-split-router-input",
+        "--moe-router-z-loss-weight",
+        "0.01",
+        "--lr-mult",
+        "2",
+        "--eval-batches",
+        "4",
+        "--log-every",
+        "50",
+        "--checkpoint-interval",
+        "0",
+        "--no-wandb-checkpoints",
+        "--wandb-group",
+        "bd3_curriculum_moe_old_bundle",
+        "--vocab-size",
+        "8193",
+        "--wandb-tags",
+        "bd3_curriculum",
+        "moe",
+        "old_bundle",
+        "source",
+        "ar",
+        "ar"
+      ],
+      "completed_at": "2026-04-27T05:28:15Z",
       "config": "configs/experiments/ar_moe_old_bundle.yaml",
       "created_at": "2026-04-27T04:47:47Z",
       "dependencies": [],
+      "exit_code": 0,
       "id": "source_ar_to03100",
+      "launcher_log": "runs/bd3_curriculum_moe_old_bundle/_launcher_logs/source_ar_to03100.log",
       "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100/train.jsonl",
       "lr_mult": 2.0,
       "max_steps": 3100,
-      "metrics": {},
+      "metrics": {
+        "avg_measured_step_sec": 0.16954150468770035,
+        "best_checkpoint_eval_loss": 2.827347993850708,
+        "best_checkpoint_step": 3050,
+        "best_eval_loss": 2.827347993850708,
+        "best_eval_step": 3050,
+        "final_checkpoint_step": 3099,
+        "final_eval_loss": 2.827347993850708,
+        "final_eval_step": 3050,
+        "jax_peak_hbm_gb": 26.926834432,
+        "last_grad_norm": 0.045012157410383224,
+        "last_loss": 2.837907314300537,
+        "last_moe_dropped_fraction": 0.0,
+        "last_moe_router_entropy": 1.0934829711914062,
+        "last_step": 3099,
+        "num_eval_points": 62,
+        "tokens_per_sec": 1546193.6620350028
+      },
       "notes": [],
       "objective": "ar",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100",
@@ -92,23 +222,102 @@
       "run_name": "source_ar_to03100",
       "source": "ar",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "started_at": "2026-04-27T05:15:47Z",
+      "status": "completed",
+      "updated_at": "2026-04-27T05:28:15Z",
+      "wall_time_sec": 747.5960485935211
     },
     {
-      "attempts": 0,
+      "attempts": 1,
       "block_len": null,
       "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/source_ar_to05100/checkpoints/final",
+      "command": [
+        "/opt/conda/bin/python",
+        "train_ar.py",
+        "--config",
+        "configs/experiments/ar_moe_old_bundle.yaml",
+        "--objective",
+        "ar",
+        "--seed",
+        "42",
+        "--run-name",
+        "source_ar_to05100",
+        "--output-dir",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to05100",
+        "--log-jsonl",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to05100/train.jsonl",
+        "--max-steps",
+        "5100",
+        "--warmup-steps",
+        "100",
+        "--batch-size",
+        "512",
+        "--grad-accum-steps",
+        "1",
+        "--data-parallel",
+        "--num-devices",
+        "4",
+        "--context-length",
+        "512",
+        "--attention-impl",
+        "cudnn",
+        "--attn-val-residual",
+        "--no-moe-split-router-input",
+        "--moe-router-z-loss-weight",
+        "0.01",
+        "--lr-mult",
+        "2",
+        "--eval-batches",
+        "4",
+        "--log-every",
+        "50",
+        "--checkpoint-interval",
+        "0",
+        "--no-wandb-checkpoints",
+        "--wandb-group",
+        "bd3_curriculum_moe_old_bundle",
+        "--restore-checkpoint",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100/checkpoints/final",
+        "--vocab-size",
+        "8193",
+        "--wandb-tags",
+        "bd3_curriculum",
+        "moe",
+        "old_bundle",
+        "source",
+        "ar",
+        "ar"
+      ],
+      "completed_at": "2026-04-27T05:35:28Z",
       "config": "configs/experiments/ar_moe_old_bundle.yaml",
       "created_at": "2026-04-27T04:47:47Z",
       "dependencies": [
         "source_ar_to03100"
       ],
+      "exit_code": 0,
       "id": "source_ar_to05100",
+      "launcher_log": "runs/bd3_curriculum_moe_old_bundle/_launcher_logs/source_ar_to05100.log",
       "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/source_ar_to05100/train.jsonl",
       "lr_mult": 2.0,
       "max_steps": 5100,
-      "metrics": {},
+      "metrics": {
+        "avg_measured_step_sec": 0.17779255561105675,
+        "best_checkpoint_eval_loss": 2.7418903708457947,
+        "best_checkpoint_step": 5050,
+        "best_eval_loss": 2.7418903708457947,
+        "best_eval_step": 5050,
+        "final_checkpoint_step": 5099,
+        "final_eval_loss": 2.7418903708457947,
+        "final_eval_step": 5050,
+        "jax_peak_hbm_gb": 26.846728192,
+        "last_grad_norm": 0.05851290374994278,
+        "last_loss": 2.7435028553009033,
+        "last_moe_dropped_fraction": 0.0,
+        "last_moe_router_entropy": 1.056868553161621,
+        "last_step": 5099,
+        "num_eval_points": 40,
+        "tokens_per_sec": 1474437.4369277444
+      },
       "notes": [],
       "objective": "ar",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/source_ar_to05100",
@@ -119,23 +328,102 @@
       "run_name": "source_ar_to05100",
       "source": "ar",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "started_at": "2026-04-27T05:28:33Z",
+      "status": "completed",
+      "updated_at": "2026-04-27T05:35:28Z",
+      "wall_time_sec": 414.7984232902527
     },
     {
-      "attempts": 0,
+      "attempts": 1,
       "block_len": null,
       "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/source_ar_to08100/checkpoints/final",
+      "command": [
+        "/opt/conda/bin/python",
+        "train_ar.py",
+        "--config",
+        "configs/experiments/ar_moe_old_bundle.yaml",
+        "--objective",
+        "ar",
+        "--seed",
+        "42",
+        "--run-name",
+        "source_ar_to08100",
+        "--output-dir",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to08100",
+        "--log-jsonl",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to08100/train.jsonl",
+        "--max-steps",
+        "8100",
+        "--warmup-steps",
+        "100",
+        "--batch-size",
+        "512",
+        "--grad-accum-steps",
+        "1",
+        "--data-parallel",
+        "--num-devices",
+        "4",
+        "--context-length",
+        "512",
+        "--attention-impl",
+        "cudnn",
+        "--attn-val-residual",
+        "--no-moe-split-router-input",
+        "--moe-router-z-loss-weight",
+        "0.01",
+        "--lr-mult",
+        "2",
+        "--eval-batches",
+        "4",
+        "--log-every",
+        "50",
+        "--checkpoint-interval",
+        "0",
+        "--no-wandb-checkpoints",
+        "--wandb-group",
+        "bd3_curriculum_moe_old_bundle",
+        "--restore-checkpoint",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to05100/checkpoints/final",
+        "--vocab-size",
+        "8193",
+        "--wandb-tags",
+        "bd3_curriculum",
+        "moe",
+        "old_bundle",
+        "source",
+        "ar",
+        "ar"
+      ],
+      "completed_at": "2026-04-27T05:45:37Z",
       "config": "configs/experiments/ar_moe_old_bundle.yaml",
       "created_at": "2026-04-27T04:47:47Z",
       "dependencies": [
         "source_ar_to05100"
       ],
+      "exit_code": 0,
       "id": "source_ar_to08100",
+      "launcher_log": "runs/bd3_curriculum_moe_old_bundle/_launcher_logs/source_ar_to08100.log",
       "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/source_ar_to08100/train.jsonl",
       "lr_mult": 2.0,
       "max_steps": 8100,
-      "metrics": {},
+      "metrics": {
+        "avg_measured_step_sec": 0.17767231043393258,
+        "best_checkpoint_eval_loss": 2.6791608929634094,
+        "best_checkpoint_step": 7100,
+        "best_eval_loss": 2.6791608929634094,
+        "best_eval_step": 7100,
+        "final_checkpoint_step": 8099,
+        "final_eval_loss": 2.708264470100403,
+        "final_eval_step": 8050,
+        "jax_peak_hbm_gb": 26.915763968,
+        "last_grad_norm": 0.07855985313653946,
+        "last_loss": 2.706144332885742,
+        "last_moe_dropped_fraction": 0.0,
+        "last_moe_router_entropy": 0.9823139905929565,
+        "last_step": 8099,
+        "num_eval_points": 60,
+        "tokens_per_sec": 1475435.3076163672
+      },
       "notes": [],
       "objective": "ar",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/source_ar_to08100",
@@ -146,23 +434,102 @@
       "run_name": "source_ar_to08100",
       "source": "ar",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "started_at": "2026-04-27T05:35:33Z",
+      "status": "completed",
+      "updated_at": "2026-04-27T05:45:37Z",
+      "wall_time_sec": 603.9480338096619
     },
     {
-      "attempts": 0,
+      "attempts": 1,
       "block_len": null,
       "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/source_ar_to09100/checkpoints/final",
+      "command": [
+        "/opt/conda/bin/python",
+        "train_ar.py",
+        "--config",
+        "configs/experiments/ar_moe_old_bundle.yaml",
+        "--objective",
+        "ar",
+        "--seed",
+        "42",
+        "--run-name",
+        "source_ar_to09100",
+        "--output-dir",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to09100",
+        "--log-jsonl",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to09100/train.jsonl",
+        "--max-steps",
+        "9100",
+        "--warmup-steps",
+        "100",
+        "--batch-size",
+        "512",
+        "--grad-accum-steps",
+        "1",
+        "--data-parallel",
+        "--num-devices",
+        "4",
+        "--context-length",
+        "512",
+        "--attention-impl",
+        "cudnn",
+        "--attn-val-residual",
+        "--no-moe-split-router-input",
+        "--moe-router-z-loss-weight",
+        "0.01",
+        "--lr-mult",
+        "2",
+        "--eval-batches",
+        "4",
+        "--log-every",
+        "50",
+        "--checkpoint-interval",
+        "0",
+        "--no-wandb-checkpoints",
+        "--wandb-group",
+        "bd3_curriculum_moe_old_bundle",
+        "--restore-checkpoint",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to08100/checkpoints/final",
+        "--vocab-size",
+        "8193",
+        "--wandb-tags",
+        "bd3_curriculum",
+        "moe",
+        "old_bundle",
+        "source",
+        "ar",
+        "ar"
+      ],
+      "completed_at": "2026-04-27T05:49:37Z",
       "config": "configs/experiments/ar_moe_old_bundle.yaml",
       "created_at": "2026-04-27T04:47:47Z",
       "dependencies": [
         "source_ar_to08100"
       ],
+      "exit_code": 0,
       "id": "source_ar_to09100",
+      "launcher_log": "runs/bd3_curriculum_moe_old_bundle/_launcher_logs/source_ar_to09100.log",
       "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/source_ar_to09100/train.jsonl",
       "lr_mult": 2.0,
       "max_steps": 9100,
-      "metrics": {},
+      "metrics": {
+        "avg_measured_step_sec": 0.186600339093362,
+        "best_checkpoint_eval_loss": 2.6610215306282043,
+        "best_checkpoint_step": 8950,
+        "best_eval_loss": 2.6610215306282043,
+        "best_eval_step": 8950,
+        "final_checkpoint_step": 9099,
+        "final_eval_loss": 2.7027671933174133,
+        "final_eval_step": 9050,
+        "jax_peak_hbm_gb": 26.769179392,
+        "last_grad_norm": 0.05251440778374672,
+        "last_loss": 2.6599605083465576,
+        "last_moe_dropped_fraction": 0.0,
+        "last_moe_router_entropy": 0.9979203939437866,
+        "last_step": 9099,
+        "num_eval_points": 20,
+        "tokens_per_sec": 1404842.034444756
+      },
       "notes": [],
       "objective": "ar",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/source_ar_to09100",
@@ -173,23 +540,102 @@
       "run_name": "source_ar_to09100",
       "source": "ar",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "started_at": "2026-04-27T05:45:42Z",
+      "status": "completed",
+      "updated_at": "2026-04-27T05:49:37Z",
+      "wall_time_sec": 234.88734793663025
     },
     {
-      "attempts": 0,
+      "attempts": 1,
       "block_len": null,
       "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/source_ar_to09600/checkpoints/final",
+      "command": [
+        "/opt/conda/bin/python",
+        "train_ar.py",
+        "--config",
+        "configs/experiments/ar_moe_old_bundle.yaml",
+        "--objective",
+        "ar",
+        "--seed",
+        "42",
+        "--run-name",
+        "source_ar_to09600",
+        "--output-dir",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to09600",
+        "--log-jsonl",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to09600/train.jsonl",
+        "--max-steps",
+        "9600",
+        "--warmup-steps",
+        "100",
+        "--batch-size",
+        "512",
+        "--grad-accum-steps",
+        "1",
+        "--data-parallel",
+        "--num-devices",
+        "4",
+        "--context-length",
+        "512",
+        "--attention-impl",
+        "cudnn",
+        "--attn-val-residual",
+        "--no-moe-split-router-input",
+        "--moe-router-z-loss-weight",
+        "0.01",
+        "--lr-mult",
+        "2",
+        "--eval-batches",
+        "4",
+        "--log-every",
+        "50",
+        "--checkpoint-interval",
+        "0",
+        "--no-wandb-checkpoints",
+        "--wandb-group",
+        "bd3_curriculum_moe_old_bundle",
+        "--restore-checkpoint",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to09100/checkpoints/final",
+        "--vocab-size",
+        "8193",
+        "--wandb-tags",
+        "bd3_curriculum",
+        "moe",
+        "old_bundle",
+        "source",
+        "ar",
+        "ar"
+      ],
+      "completed_at": "2026-04-27T05:51:59Z",
       "config": "configs/experiments/ar_moe_old_bundle.yaml",
       "created_at": "2026-04-27T04:47:47Z",
       "dependencies": [
         "source_ar_to09100"
       ],
+      "exit_code": 0,
       "id": "source_ar_to09600",
+      "launcher_log": "runs/bd3_curriculum_moe_old_bundle/_launcher_logs/source_ar_to09600.log",
       "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/source_ar_to09600/train.jsonl",
       "lr_mult": 2.0,
       "max_steps": 9600,
-      "metrics": {},
+      "metrics": {
+        "avg_measured_step_sec": 0.19950003868038765,
+        "best_checkpoint_eval_loss": 2.676333248615265,
+        "best_checkpoint_step": 9400,
+        "best_eval_loss": 2.676333248615265,
+        "best_eval_step": 9400,
+        "final_checkpoint_step": 9599,
+        "final_eval_loss": 2.7121655344963074,
+        "final_eval_step": 9550,
+        "jax_peak_hbm_gb": 26.766786048,
+        "last_grad_norm": 0.05872417613863945,
+        "last_loss": 2.657865285873413,
+        "last_moe_dropped_fraction": 0.0,
+        "last_moe_router_entropy": 1.000288724899292,
+        "last_step": 9599,
+        "num_eval_points": 10,
+        "tokens_per_sec": 1314004.7577633413
+      },
       "notes": [],
       "objective": "ar",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/source_ar_to09600",
@@ -200,23 +646,102 @@
       "run_name": "source_ar_to09600",
       "source": "ar",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "started_at": "2026-04-27T05:49:43Z",
+      "status": "completed",
+      "updated_at": "2026-04-27T05:51:59Z",
+      "wall_time_sec": 135.531391620636
     },
     {
-      "attempts": 0,
+      "attempts": 1,
       "block_len": null,
       "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/source_ar_to10100/checkpoints/final",
+      "command": [
+        "/opt/conda/bin/python",
+        "train_ar.py",
+        "--config",
+        "configs/experiments/ar_moe_old_bundle.yaml",
+        "--objective",
+        "ar",
+        "--seed",
+        "42",
+        "--run-name",
+        "source_ar_to10100",
+        "--output-dir",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to10100",
+        "--log-jsonl",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to10100/train.jsonl",
+        "--max-steps",
+        "10100",
+        "--warmup-steps",
+        "100",
+        "--batch-size",
+        "512",
+        "--grad-accum-steps",
+        "1",
+        "--data-parallel",
+        "--num-devices",
+        "4",
+        "--context-length",
+        "512",
+        "--attention-impl",
+        "cudnn",
+        "--attn-val-residual",
+        "--no-moe-split-router-input",
+        "--moe-router-z-loss-weight",
+        "0.01",
+        "--lr-mult",
+        "2",
+        "--eval-batches",
+        "4",
+        "--log-every",
+        "50",
+        "--checkpoint-interval",
+        "0",
+        "--no-wandb-checkpoints",
+        "--wandb-group",
+        "bd3_curriculum_moe_old_bundle",
+        "--restore-checkpoint",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to09600/checkpoints/final",
+        "--vocab-size",
+        "8193",
+        "--wandb-tags",
+        "bd3_curriculum",
+        "moe",
+        "old_bundle",
+        "source",
+        "ar",
+        "ar"
+      ],
+      "completed_at": "2026-04-27T05:54:24Z",
       "config": "configs/experiments/ar_moe_old_bundle.yaml",
       "created_at": "2026-04-27T04:47:47Z",
       "dependencies": [
         "source_ar_to09600"
       ],
+      "exit_code": 0,
       "id": "source_ar_to10100",
+      "launcher_log": "runs/bd3_curriculum_moe_old_bundle/_launcher_logs/source_ar_to10100.log",
       "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/source_ar_to10100/train.jsonl",
       "lr_mult": 2.0,
       "max_steps": 10100,
-      "metrics": {},
+      "metrics": {
+        "avg_measured_step_sec": 0.20185722079407423,
+        "best_checkpoint_eval_loss": 2.671805262565613,
+        "best_checkpoint_step": 9900,
+        "best_eval_loss": 2.671805262565613,
+        "best_eval_step": 9900,
+        "final_checkpoint_step": 10099,
+        "final_eval_loss": 2.7071951031684875,
+        "final_eval_step": 10050,
+        "jax_peak_hbm_gb": 26.757003008,
+        "last_grad_norm": 0.061748333275318146,
+        "last_loss": 2.608035087585449,
+        "last_moe_dropped_fraction": 0.0,
+        "last_moe_router_entropy": 1.0057090520858765,
+        "last_step": 10099,
+        "num_eval_points": 10,
+        "tokens_per_sec": 1298660.5035418954
+      },
       "notes": [],
       "objective": "ar",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/source_ar_to10100",
@@ -227,8 +752,10 @@
       "run_name": "source_ar_to10100",
       "source": "ar",
       "source_step_count": 10100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "started_at": "2026-04-27T05:52:07Z",
+      "status": "completed",
+      "updated_at": "2026-04-27T05:54:24Z",
+      "wall_time_sec": 137.2611382007599
     },
     {
       "attempts": 0,
@@ -491,19 +1018,114 @@
       "updated_at": "2026-04-27T04:47:47Z"
     },
     {
-      "attempts": 0,
+      "attempts": 1,
       "block_len": 256,
       "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr0p666667_probe/checkpoints/final",
+      "command": [
+        "/opt/conda/bin/python",
+        "train_ar.py",
+        "--config",
+        "configs/experiments/mdlm_moe_old_bundle.yaml",
+        "--objective",
+        "bd3lm",
+        "--seed",
+        "42",
+        "--run-name",
+        "ar_p030_b256_lr0p666667_probe",
+        "--output-dir",
+        "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr0p666667_probe",
+        "--log-jsonl",
+        "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr0p666667_probe/train.jsonl",
+        "--max-steps",
+        "4150",
+        "--warmup-steps",
+        "100",
+        "--batch-size",
+        "512",
+        "--grad-accum-steps",
+        "1",
+        "--data-parallel",
+        "--num-devices",
+        "4",
+        "--context-length",
+        "512",
+        "--attention-impl",
+        "cudnn",
+        "--attn-val-residual",
+        "--no-moe-split-router-input",
+        "--moe-router-z-loss-weight",
+        "0.01",
+        "--lr-mult",
+        "0.666666666667",
+        "--eval-batches",
+        "4",
+        "--log-every",
+        "50",
+        "--checkpoint-interval",
+        "0",
+        "--no-wandb-checkpoints",
+        "--wandb-group",
+        "bd3_curriculum_moe_old_bundle",
+        "--restore-checkpoint",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100/checkpoints/final",
+        "--vocab-size",
+        "8192",
+        "--mask-token-id",
+        "8192",
+        "--diffusion-steps",
+        "100",
+        "--t-min",
+        "0.45",
+        "--t-max",
+        "0.95",
+        "--noise-schedule",
+        "linear",
+        "--eval-t-frac",
+        "0.6",
+        "--bd3-block-len",
+        "256",
+        "--bd3-attention",
+        "dense",
+        "--wandb-tags",
+        "bd3_curriculum",
+        "moe",
+        "old_bundle",
+        "switch_probe",
+        "ar",
+        "bd3lm",
+        "b256",
+        "p030"
+      ],
+      "completed_at": "2026-04-27T06:11:11Z",
       "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
       "created_at": "2026-04-27T04:47:47Z",
       "dependencies": [
         "source_ar_to03100"
       ],
+      "exit_code": 0,
       "id": "ar_p030_b256_lr0p666667_probe",
+      "launcher_log": "runs/bd3_curriculum_moe_old_bundle/_launcher_logs/ar_p030_b256_lr0p666667_probe.log",
       "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr0p666667_probe/train.jsonl",
       "lr_mult": 0.6666666666666666,
       "max_steps": 4150,
-      "metrics": {},
+      "metrics": {
+        "avg_measured_step_sec": 0.6154422057309143,
+        "best_checkpoint_eval_loss": 3.4620238542556763,
+        "best_checkpoint_step": 4100,
+        "best_eval_loss": 3.4620238542556763,
+        "best_eval_step": 4100,
+        "final_checkpoint_step": 4149,
+        "final_eval_loss": 3.4620238542556763,
+        "final_eval_step": 4100,
+        "jax_peak_hbm_gb": 46.501961984,
+        "last_grad_norm": 0.09868887066841125,
+        "last_loss": 3.8409907817840576,
+        "last_moe_dropped_fraction": 0.0,
+        "last_moe_router_entropy": 1.1752631664276123,
+        "last_step": 4149,
+        "num_eval_points": 21,
+        "tokens_per_sec": 425944.13831055234
+      },
       "notes": [],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr0p666667_probe",
@@ -514,23 +1136,120 @@
       "run_name": "ar_p030_b256_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "started_at": "2026-04-27T05:58:49Z",
+      "status": "completed",
+      "updated_at": "2026-04-27T06:11:11Z",
+      "wall_time_sec": 742.2264881134033
     },
     {
-      "attempts": 0,
+      "attempts": 1,
       "block_len": 256,
       "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr2_probe/checkpoints/final",
+      "command": [
+        "/opt/conda/bin/python",
+        "train_ar.py",
+        "--config",
+        "configs/experiments/mdlm_moe_old_bundle.yaml",
+        "--objective",
+        "bd3lm",
+        "--seed",
+        "42",
+        "--run-name",
+        "ar_p030_b256_lr2_probe",
+        "--output-dir",
+        "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr2_probe",
+        "--log-jsonl",
+        "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr2_probe/train.jsonl",
+        "--max-steps",
+        "4150",
+        "--warmup-steps",
+        "100",
+        "--batch-size",
+        "512",
+        "--grad-accum-steps",
+        "1",
+        "--data-parallel",
+        "--num-devices",
+        "4",
+        "--context-length",
+        "512",
+        "--attention-impl",
+        "cudnn",
+        "--attn-val-residual",
+        "--no-moe-split-router-input",
+        "--moe-router-z-loss-weight",
+        "0.01",
+        "--lr-mult",
+        "2",
+        "--eval-batches",
+        "4",
+        "--log-every",
+        "50",
+        "--checkpoint-interval",
+        "0",
+        "--no-wandb-checkpoints",
+        "--wandb-group",
+        "bd3_curriculum_moe_old_bundle",
+        "--restore-checkpoint",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100/checkpoints/final",
+        "--vocab-size",
+        "8192",
+        "--mask-token-id",
+        "8192",
+        "--diffusion-steps",
+        "100",
+        "--t-min",
+        "0.45",
+        "--t-max",
+        "0.95",
+        "--noise-schedule",
+        "linear",
+        "--eval-t-frac",
+        "0.6",
+        "--bd3-block-len",
+        "256",
+        "--bd3-attention",
+        "dense",
+        "--wandb-tags",
+        "bd3_curriculum",
+        "moe",
+        "old_bundle",
+        "switch_probe",
+        "ar",
+        "bd3lm",
+        "b256",
+        "p030"
+      ],
+      "completed_at": "2026-04-27T06:23:37Z",
       "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
       "created_at": "2026-04-27T04:47:47Z",
       "dependencies": [
         "source_ar_to03100"
       ],
+      "exit_code": 0,
       "id": "ar_p030_b256_lr2_probe",
+      "launcher_log": "runs/bd3_curriculum_moe_old_bundle/_launcher_logs/ar_p030_b256_lr2_probe.log",
       "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr2_probe/train.jsonl",
       "lr_mult": 2.0,
       "max_steps": 4150,
-      "metrics": {},
+      "metrics": {
+        "avg_measured_step_sec": 0.6091284160379188,
+        "best_checkpoint_eval_loss": 3.259912073612213,
+        "best_checkpoint_step": 4000,
+        "best_eval_loss": 3.259912073612213,
+        "best_eval_step": 4000,
+        "final_checkpoint_step": 4149,
+        "final_eval_loss": 3.2642388343811035,
+        "final_eval_step": 4100,
+        "jax_peak_hbm_gb": 46.501961984,
+        "last_grad_norm": 0.10149145871400833,
+        "last_loss": 3.682755470275879,
+        "last_moe_dropped_fraction": 0.0,
+        "last_moe_router_entropy": 1.2365448474884033,
+        "last_step": 4149,
+        "num_eval_points": 21,
+        "tokens_per_sec": 430359.1707395921
+      },
       "notes": [],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr2_probe",
@@ -541,23 +1260,120 @@
       "run_name": "ar_p030_b256_lr2_probe",
       "source": "ar",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "started_at": "2026-04-27T06:11:32Z",
+      "status": "completed",
+      "updated_at": "2026-04-27T06:23:37Z",
+      "wall_time_sec": 725.2638657093048
     },
     {
-      "attempts": 0,
+      "attempts": 1,
       "block_len": 256,
       "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr6_probe/checkpoints/final",
+      "command": [
+        "/opt/conda/bin/python",
+        "train_ar.py",
+        "--config",
+        "configs/experiments/mdlm_moe_old_bundle.yaml",
+        "--objective",
+        "bd3lm",
+        "--seed",
+        "42",
+        "--run-name",
+        "ar_p030_b256_lr6_probe",
+        "--output-dir",
+        "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr6_probe",
+        "--log-jsonl",
+        "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr6_probe/train.jsonl",
+        "--max-steps",
+        "4150",
+        "--warmup-steps",
+        "100",
+        "--batch-size",
+        "512",
+        "--grad-accum-steps",
+        "1",
+        "--data-parallel",
+        "--num-devices",
+        "4",
+        "--context-length",
+        "512",
+        "--attention-impl",
+        "cudnn",
+        "--attn-val-residual",
+        "--no-moe-split-router-input",
+        "--moe-router-z-loss-weight",
+        "0.01",
+        "--lr-mult",
+        "6",
+        "--eval-batches",
+        "4",
+        "--log-every",
+        "50",
+        "--checkpoint-interval",
+        "0",
+        "--no-wandb-checkpoints",
+        "--wandb-group",
+        "bd3_curriculum_moe_old_bundle",
+        "--restore-checkpoint",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100/checkpoints/final",
+        "--vocab-size",
+        "8192",
+        "--mask-token-id",
+        "8192",
+        "--diffusion-steps",
+        "100",
+        "--t-min",
+        "0.45",
+        "--t-max",
+        "0.95",
+        "--noise-schedule",
+        "linear",
+        "--eval-t-frac",
+        "0.6",
+        "--bd3-block-len",
+        "256",
+        "--bd3-attention",
+        "dense",
+        "--wandb-tags",
+        "bd3_curriculum",
+        "moe",
+        "old_bundle",
+        "switch_probe",
+        "ar",
+        "bd3lm",
+        "b256",
+        "p030"
+      ],
+      "completed_at": "2026-04-27T06:36:04Z",
       "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
       "created_at": "2026-04-27T04:47:47Z",
       "dependencies": [
         "source_ar_to03100"
       ],
+      "exit_code": 0,
       "id": "ar_p030_b256_lr6_probe",
+      "launcher_log": "runs/bd3_curriculum_moe_old_bundle/_launcher_logs/ar_p030_b256_lr6_probe.log",
       "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr6_probe/train.jsonl",
       "lr_mult": 6.0,
       "max_steps": 4150,
-      "metrics": {},
+      "metrics": {
+        "avg_measured_step_sec": 0.6115935252721066,
+        "best_checkpoint_eval_loss": 3.2812954783439636,
+        "best_checkpoint_step": 4100,
+        "best_eval_loss": 3.2812954783439636,
+        "best_eval_step": 4100,
+        "final_checkpoint_step": 4149,
+        "final_eval_loss": 3.2812954783439636,
+        "final_eval_step": 4100,
+        "jax_peak_hbm_gb": 46.469889024,
+        "last_grad_norm": 0.3037850260734558,
+        "last_loss": 3.7103610038757324,
+        "last_moe_dropped_fraction": 0.0,
+        "last_moe_router_entropy": 1.2554352283477783,
+        "last_step": 4149,
+        "num_eval_points": 21,
+        "tokens_per_sec": 428624.5507314166
+      },
       "notes": [],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr6_probe",
@@ -568,8 +1384,10 @@
       "run_name": "ar_p030_b256_lr6_probe",
       "source": "ar",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "started_at": "2026-04-27T06:23:53Z",
+      "status": "completed",
+      "updated_at": "2026-04-27T06:36:04Z",
+      "wall_time_sec": 730.440601348877
     },
     {
       "attempts": 0,
@@ -585,7 +1403,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b64_lr0p666667_probe",
       "p_source": 0.3,
@@ -595,24 +1418,120 @@
       "run_name": "ar_p030_b64_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
-      "attempts": 0,
+      "attempts": 1,
       "block_len": 64,
       "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b64_lr2_probe/checkpoints/final",
+      "command": [
+        "/opt/conda/bin/python",
+        "train_ar.py",
+        "--config",
+        "configs/experiments/mdlm_moe_old_bundle.yaml",
+        "--objective",
+        "bd3lm",
+        "--seed",
+        "42",
+        "--run-name",
+        "ar_p030_b64_lr2_probe",
+        "--output-dir",
+        "runs/bd3_curriculum_moe_old_bundle/ar_p030_b64_lr2_probe",
+        "--log-jsonl",
+        "runs/bd3_curriculum_moe_old_bundle/ar_p030_b64_lr2_probe/train.jsonl",
+        "--max-steps",
+        "4150",
+        "--warmup-steps",
+        "100",
+        "--batch-size",
+        "512",
+        "--grad-accum-steps",
+        "1",
+        "--data-parallel",
+        "--num-devices",
+        "4",
+        "--context-length",
+        "512",
+        "--attention-impl",
+        "cudnn",
+        "--attn-val-residual",
+        "--no-moe-split-router-input",
+        "--moe-router-z-loss-weight",
+        "0.01",
+        "--lr-mult",
+        "2",
+        "--eval-batches",
+        "4",
+        "--log-every",
+        "50",
+        "--checkpoint-interval",
+        "0",
+        "--no-wandb-checkpoints",
+        "--wandb-group",
+        "bd3_curriculum_moe_old_bundle",
+        "--restore-checkpoint",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100/checkpoints/final",
+        "--vocab-size",
+        "8192",
+        "--mask-token-id",
+        "8192",
+        "--diffusion-steps",
+        "100",
+        "--t-min",
+        "0.45",
+        "--t-max",
+        "0.95",
+        "--noise-schedule",
+        "linear",
+        "--eval-t-frac",
+        "0.6",
+        "--bd3-block-len",
+        "64",
+        "--bd3-attention",
+        "dense",
+        "--wandb-tags",
+        "bd3_curriculum",
+        "moe",
+        "old_bundle",
+        "switch_probe",
+        "ar",
+        "bd3lm",
+        "b64",
+        "p030"
+      ],
+      "completed_at": "2026-04-27T06:41:48Z",
       "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
       "created_at": "2026-04-27T04:47:47Z",
       "dependencies": [
         "source_ar_to03100"
       ],
+      "exit_code": -15,
       "id": "ar_p030_b64_lr2_probe",
+      "launcher_log": "runs/bd3_curriculum_moe_old_bundle/_launcher_logs/ar_p030_b64_lr2_probe.log",
       "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b64_lr2_probe/train.jsonl",
       "lr_mult": 2.0,
       "max_steps": 4150,
-      "metrics": {},
-      "notes": [],
+      "metrics": {
+        "best_checkpoint_eval_loss": 3.572018623352051,
+        "best_checkpoint_step": 3300,
+        "best_eval_loss": 3.572018623352051,
+        "best_eval_step": 3300,
+        "final_eval_loss": 3.572018623352051,
+        "final_eval_step": 3300,
+        "last_grad_norm": 0.12114176154136658,
+        "last_loss": 3.8960087299346924,
+        "last_moe_dropped_fraction": 0.0,
+        "last_moe_router_entropy": 1.1906650066375732,
+        "last_step": 3326,
+        "num_eval_points": 5
+      },
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b64_lr2_probe",
       "p_source": 0.3,
@@ -622,8 +1541,10 @@
       "run_name": "ar_p030_b64_lr2_probe",
       "source": "ar",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "started_at": "2026-04-27T06:38:48Z",
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z",
+      "wall_time_sec": 179.54046392440796
     },
     {
       "attempts": 0,
@@ -639,7 +1560,12 @@
       "lr_mult": 6.0,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b64_lr6_probe",
       "p_source": 0.3,
@@ -649,8 +1575,8 @@
       "run_name": "ar_p030_b64_lr6_probe",
       "source": "ar",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -666,7 +1592,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b16_lr0p666667_probe",
       "p_source": 0.3,
@@ -676,8 +1607,8 @@
       "run_name": "ar_p030_b16_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -693,7 +1624,12 @@
       "lr_mult": 2.0,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b16_lr2_probe",
       "p_source": 0.3,
@@ -703,8 +1639,8 @@
       "run_name": "ar_p030_b16_lr2_probe",
       "source": "ar",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -720,7 +1656,12 @@
       "lr_mult": 6.0,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b16_lr6_probe",
       "p_source": 0.3,
@@ -730,8 +1671,8 @@
       "run_name": "ar_p030_b16_lr6_probe",
       "source": "ar",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -747,7 +1688,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b4_lr0p666667_probe",
       "p_source": 0.3,
@@ -757,8 +1703,8 @@
       "run_name": "ar_p030_b4_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -774,7 +1720,12 @@
       "lr_mult": 2.0,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b4_lr2_probe",
       "p_source": 0.3,
@@ -784,8 +1735,8 @@
       "run_name": "ar_p030_b4_lr2_probe",
       "source": "ar",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -801,7 +1752,12 @@
       "lr_mult": 6.0,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b4_lr6_probe",
       "p_source": 0.3,
@@ -811,8 +1767,8 @@
       "run_name": "ar_p030_b4_lr6_probe",
       "source": "ar",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -828,7 +1784,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b256_lr0p666667_probe",
       "p_source": 0.5,
@@ -838,8 +1799,8 @@
       "run_name": "ar_p050_b256_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -855,7 +1816,12 @@
       "lr_mult": 2.0,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b256_lr2_probe",
       "p_source": 0.5,
@@ -865,8 +1831,8 @@
       "run_name": "ar_p050_b256_lr2_probe",
       "source": "ar",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -882,7 +1848,12 @@
       "lr_mult": 6.0,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b256_lr6_probe",
       "p_source": 0.5,
@@ -892,8 +1863,8 @@
       "run_name": "ar_p050_b256_lr6_probe",
       "source": "ar",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -909,7 +1880,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b64_lr0p666667_probe",
       "p_source": 0.5,
@@ -919,8 +1895,8 @@
       "run_name": "ar_p050_b64_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -936,7 +1912,12 @@
       "lr_mult": 2.0,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b64_lr2_probe",
       "p_source": 0.5,
@@ -946,8 +1927,8 @@
       "run_name": "ar_p050_b64_lr2_probe",
       "source": "ar",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -963,7 +1944,12 @@
       "lr_mult": 6.0,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b64_lr6_probe",
       "p_source": 0.5,
@@ -973,8 +1959,8 @@
       "run_name": "ar_p050_b64_lr6_probe",
       "source": "ar",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -990,7 +1976,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b16_lr0p666667_probe",
       "p_source": 0.5,
@@ -1000,8 +1991,8 @@
       "run_name": "ar_p050_b16_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1017,7 +2008,12 @@
       "lr_mult": 2.0,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b16_lr2_probe",
       "p_source": 0.5,
@@ -1027,8 +2023,8 @@
       "run_name": "ar_p050_b16_lr2_probe",
       "source": "ar",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -1044,7 +2040,12 @@
       "lr_mult": 6.0,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b16_lr6_probe",
       "p_source": 0.5,
@@ -1054,8 +2055,8 @@
       "run_name": "ar_p050_b16_lr6_probe",
       "source": "ar",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1071,7 +2072,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b4_lr0p666667_probe",
       "p_source": 0.5,
@@ -1081,8 +2087,8 @@
       "run_name": "ar_p050_b4_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1098,7 +2104,12 @@
       "lr_mult": 2.0,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b4_lr2_probe",
       "p_source": 0.5,
@@ -1108,8 +2119,8 @@
       "run_name": "ar_p050_b4_lr2_probe",
       "source": "ar",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -1125,7 +2136,12 @@
       "lr_mult": 6.0,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b4_lr6_probe",
       "p_source": 0.5,
@@ -1135,8 +2151,8 @@
       "run_name": "ar_p050_b4_lr6_probe",
       "source": "ar",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1152,7 +2168,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b256_lr0p666667_probe",
       "p_source": 0.8,
@@ -1162,8 +2183,8 @@
       "run_name": "ar_p080_b256_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1179,7 +2200,12 @@
       "lr_mult": 2.0,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b256_lr2_probe",
       "p_source": 0.8,
@@ -1189,8 +2215,8 @@
       "run_name": "ar_p080_b256_lr2_probe",
       "source": "ar",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -1206,7 +2232,12 @@
       "lr_mult": 6.0,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b256_lr6_probe",
       "p_source": 0.8,
@@ -1216,8 +2247,8 @@
       "run_name": "ar_p080_b256_lr6_probe",
       "source": "ar",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1233,7 +2264,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b64_lr0p666667_probe",
       "p_source": 0.8,
@@ -1243,8 +2279,8 @@
       "run_name": "ar_p080_b64_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1260,7 +2296,12 @@
       "lr_mult": 2.0,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b64_lr2_probe",
       "p_source": 0.8,
@@ -1270,8 +2311,8 @@
       "run_name": "ar_p080_b64_lr2_probe",
       "source": "ar",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -1287,7 +2328,12 @@
       "lr_mult": 6.0,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b64_lr6_probe",
       "p_source": 0.8,
@@ -1297,8 +2343,8 @@
       "run_name": "ar_p080_b64_lr6_probe",
       "source": "ar",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1314,7 +2360,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b16_lr0p666667_probe",
       "p_source": 0.8,
@@ -1324,8 +2375,8 @@
       "run_name": "ar_p080_b16_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1341,7 +2392,12 @@
       "lr_mult": 2.0,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b16_lr2_probe",
       "p_source": 0.8,
@@ -1351,8 +2407,8 @@
       "run_name": "ar_p080_b16_lr2_probe",
       "source": "ar",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -1368,7 +2424,12 @@
       "lr_mult": 6.0,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b16_lr6_probe",
       "p_source": 0.8,
@@ -1378,8 +2439,8 @@
       "run_name": "ar_p080_b16_lr6_probe",
       "source": "ar",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1395,7 +2456,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b4_lr0p666667_probe",
       "p_source": 0.8,
@@ -1405,8 +2471,8 @@
       "run_name": "ar_p080_b4_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1422,7 +2488,12 @@
       "lr_mult": 2.0,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b4_lr2_probe",
       "p_source": 0.8,
@@ -1432,8 +2503,8 @@
       "run_name": "ar_p080_b4_lr2_probe",
       "source": "ar",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -1449,7 +2520,12 @@
       "lr_mult": 6.0,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b4_lr6_probe",
       "p_source": 0.8,
@@ -1459,8 +2535,8 @@
       "run_name": "ar_p080_b4_lr6_probe",
       "source": "ar",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1476,7 +2552,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b256_lr0p666667_probe",
       "p_source": 0.9,
@@ -1486,8 +2567,8 @@
       "run_name": "ar_p090_b256_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1503,7 +2584,12 @@
       "lr_mult": 2.0,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b256_lr2_probe",
       "p_source": 0.9,
@@ -1513,8 +2599,8 @@
       "run_name": "ar_p090_b256_lr2_probe",
       "source": "ar",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -1530,7 +2616,12 @@
       "lr_mult": 6.0,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b256_lr6_probe",
       "p_source": 0.9,
@@ -1540,8 +2631,8 @@
       "run_name": "ar_p090_b256_lr6_probe",
       "source": "ar",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1557,7 +2648,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b64_lr0p666667_probe",
       "p_source": 0.9,
@@ -1567,8 +2663,8 @@
       "run_name": "ar_p090_b64_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1584,7 +2680,12 @@
       "lr_mult": 2.0,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b64_lr2_probe",
       "p_source": 0.9,
@@ -1594,8 +2695,8 @@
       "run_name": "ar_p090_b64_lr2_probe",
       "source": "ar",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -1611,7 +2712,12 @@
       "lr_mult": 6.0,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b64_lr6_probe",
       "p_source": 0.9,
@@ -1621,8 +2727,8 @@
       "run_name": "ar_p090_b64_lr6_probe",
       "source": "ar",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1638,7 +2744,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b16_lr0p666667_probe",
       "p_source": 0.9,
@@ -1648,8 +2759,8 @@
       "run_name": "ar_p090_b16_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1665,7 +2776,12 @@
       "lr_mult": 2.0,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b16_lr2_probe",
       "p_source": 0.9,
@@ -1675,8 +2791,8 @@
       "run_name": "ar_p090_b16_lr2_probe",
       "source": "ar",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -1692,7 +2808,12 @@
       "lr_mult": 6.0,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b16_lr6_probe",
       "p_source": 0.9,
@@ -1702,8 +2823,8 @@
       "run_name": "ar_p090_b16_lr6_probe",
       "source": "ar",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1719,7 +2840,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b4_lr0p666667_probe",
       "p_source": 0.9,
@@ -1729,8 +2855,8 @@
       "run_name": "ar_p090_b4_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1746,7 +2872,12 @@
       "lr_mult": 2.0,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b4_lr2_probe",
       "p_source": 0.9,
@@ -1756,8 +2887,8 @@
       "run_name": "ar_p090_b4_lr2_probe",
       "source": "ar",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -1773,7 +2904,12 @@
       "lr_mult": 6.0,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b4_lr6_probe",
       "p_source": 0.9,
@@ -1783,8 +2919,8 @@
       "run_name": "ar_p090_b4_lr6_probe",
       "source": "ar",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1800,7 +2936,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b256_lr0p666667_probe",
       "p_source": 0.95,
@@ -1810,8 +2951,8 @@
       "run_name": "ar_p095_b256_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1827,7 +2968,12 @@
       "lr_mult": 2.0,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b256_lr2_probe",
       "p_source": 0.95,
@@ -1837,8 +2983,8 @@
       "run_name": "ar_p095_b256_lr2_probe",
       "source": "ar",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -1854,7 +3000,12 @@
       "lr_mult": 6.0,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b256_lr6_probe",
       "p_source": 0.95,
@@ -1864,8 +3015,8 @@
       "run_name": "ar_p095_b256_lr6_probe",
       "source": "ar",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1881,7 +3032,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b64_lr0p666667_probe",
       "p_source": 0.95,
@@ -1891,8 +3047,8 @@
       "run_name": "ar_p095_b64_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1908,7 +3064,12 @@
       "lr_mult": 2.0,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b64_lr2_probe",
       "p_source": 0.95,
@@ -1918,8 +3079,8 @@
       "run_name": "ar_p095_b64_lr2_probe",
       "source": "ar",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -1935,7 +3096,12 @@
       "lr_mult": 6.0,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b64_lr6_probe",
       "p_source": 0.95,
@@ -1945,8 +3111,8 @@
       "run_name": "ar_p095_b64_lr6_probe",
       "source": "ar",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1962,7 +3128,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b16_lr0p666667_probe",
       "p_source": 0.95,
@@ -1972,8 +3143,8 @@
       "run_name": "ar_p095_b16_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -1989,7 +3160,12 @@
       "lr_mult": 2.0,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b16_lr2_probe",
       "p_source": 0.95,
@@ -1999,8 +3175,8 @@
       "run_name": "ar_p095_b16_lr2_probe",
       "source": "ar",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -2016,7 +3192,12 @@
       "lr_mult": 6.0,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b16_lr6_probe",
       "p_source": 0.95,
@@ -2026,8 +3207,8 @@
       "run_name": "ar_p095_b16_lr6_probe",
       "source": "ar",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2043,7 +3224,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b4_lr0p666667_probe",
       "p_source": 0.95,
@@ -2053,8 +3239,8 @@
       "run_name": "ar_p095_b4_lr0p666667_probe",
       "source": "ar",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2070,7 +3256,12 @@
       "lr_mult": 2.0,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Superseded by direct lr_mult=2.0 full continuation policy; short probe not needed."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b4_lr2_probe",
       "p_source": 0.95,
@@ -2080,8 +3271,8 @@
       "run_name": "ar_p095_b4_lr2_probe",
       "source": "ar",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "promoted",
+      "updated_at": "2026-04-27T06:42:25Z"
     },
     {
       "attempts": 0,
@@ -2097,7 +3288,12 @@
       "lr_mult": 6.0,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b4_lr6_probe",
       "p_source": 0.95,
@@ -2107,8 +3303,8 @@
       "run_name": "ar_p095_b4_lr6_probe",
       "source": "ar",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2124,7 +3320,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p030_b256_lr0p666667_probe",
       "p_source": 0.3,
@@ -2134,8 +3335,8 @@
       "run_name": "mdlm_p030_b256_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2178,7 +3379,12 @@
       "lr_mult": 6.0,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p030_b256_lr6_probe",
       "p_source": 0.3,
@@ -2188,8 +3394,8 @@
       "run_name": "mdlm_p030_b256_lr6_probe",
       "source": "mdlm",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2205,7 +3411,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p030_b64_lr0p666667_probe",
       "p_source": 0.3,
@@ -2215,8 +3426,8 @@
       "run_name": "mdlm_p030_b64_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2259,7 +3470,12 @@
       "lr_mult": 6.0,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p030_b64_lr6_probe",
       "p_source": 0.3,
@@ -2269,8 +3485,8 @@
       "run_name": "mdlm_p030_b64_lr6_probe",
       "source": "mdlm",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2286,7 +3502,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p030_b16_lr0p666667_probe",
       "p_source": 0.3,
@@ -2296,8 +3517,8 @@
       "run_name": "mdlm_p030_b16_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2340,7 +3561,12 @@
       "lr_mult": 6.0,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p030_b16_lr6_probe",
       "p_source": 0.3,
@@ -2350,8 +3576,8 @@
       "run_name": "mdlm_p030_b16_lr6_probe",
       "source": "mdlm",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2367,7 +3593,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p030_b4_lr0p666667_probe",
       "p_source": 0.3,
@@ -2377,8 +3608,8 @@
       "run_name": "mdlm_p030_b4_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2421,7 +3652,12 @@
       "lr_mult": 6.0,
       "max_steps": 4150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p030_b4_lr6_probe",
       "p_source": 0.3,
@@ -2431,8 +3667,8 @@
       "run_name": "mdlm_p030_b4_lr6_probe",
       "source": "mdlm",
       "source_step_count": 3100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2448,7 +3684,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p050_b256_lr0p666667_probe",
       "p_source": 0.5,
@@ -2458,8 +3699,8 @@
       "run_name": "mdlm_p050_b256_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2502,7 +3743,12 @@
       "lr_mult": 6.0,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p050_b256_lr6_probe",
       "p_source": 0.5,
@@ -2512,8 +3758,8 @@
       "run_name": "mdlm_p050_b256_lr6_probe",
       "source": "mdlm",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2529,7 +3775,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p050_b64_lr0p666667_probe",
       "p_source": 0.5,
@@ -2539,8 +3790,8 @@
       "run_name": "mdlm_p050_b64_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2583,7 +3834,12 @@
       "lr_mult": 6.0,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p050_b64_lr6_probe",
       "p_source": 0.5,
@@ -2593,8 +3849,8 @@
       "run_name": "mdlm_p050_b64_lr6_probe",
       "source": "mdlm",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2610,7 +3866,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p050_b16_lr0p666667_probe",
       "p_source": 0.5,
@@ -2620,8 +3881,8 @@
       "run_name": "mdlm_p050_b16_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2664,7 +3925,12 @@
       "lr_mult": 6.0,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p050_b16_lr6_probe",
       "p_source": 0.5,
@@ -2674,8 +3940,8 @@
       "run_name": "mdlm_p050_b16_lr6_probe",
       "source": "mdlm",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2691,7 +3957,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p050_b4_lr0p666667_probe",
       "p_source": 0.5,
@@ -2701,8 +3972,8 @@
       "run_name": "mdlm_p050_b4_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2745,7 +4016,12 @@
       "lr_mult": 6.0,
       "max_steps": 6150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p050_b4_lr6_probe",
       "p_source": 0.5,
@@ -2755,8 +4031,8 @@
       "run_name": "mdlm_p050_b4_lr6_probe",
       "source": "mdlm",
       "source_step_count": 5100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2772,7 +4048,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p080_b256_lr0p666667_probe",
       "p_source": 0.8,
@@ -2782,8 +4063,8 @@
       "run_name": "mdlm_p080_b256_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2826,7 +4107,12 @@
       "lr_mult": 6.0,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p080_b256_lr6_probe",
       "p_source": 0.8,
@@ -2836,8 +4122,8 @@
       "run_name": "mdlm_p080_b256_lr6_probe",
       "source": "mdlm",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2853,7 +4139,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p080_b64_lr0p666667_probe",
       "p_source": 0.8,
@@ -2863,8 +4154,8 @@
       "run_name": "mdlm_p080_b64_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2907,7 +4198,12 @@
       "lr_mult": 6.0,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p080_b64_lr6_probe",
       "p_source": 0.8,
@@ -2917,8 +4213,8 @@
       "run_name": "mdlm_p080_b64_lr6_probe",
       "source": "mdlm",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2934,7 +4230,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p080_b16_lr0p666667_probe",
       "p_source": 0.8,
@@ -2944,8 +4245,8 @@
       "run_name": "mdlm_p080_b16_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -2988,7 +4289,12 @@
       "lr_mult": 6.0,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p080_b16_lr6_probe",
       "p_source": 0.8,
@@ -2998,8 +4304,8 @@
       "run_name": "mdlm_p080_b16_lr6_probe",
       "source": "mdlm",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3015,7 +4321,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p080_b4_lr0p666667_probe",
       "p_source": 0.8,
@@ -3025,8 +4336,8 @@
       "run_name": "mdlm_p080_b4_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3069,7 +4380,12 @@
       "lr_mult": 6.0,
       "max_steps": 9150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p080_b4_lr6_probe",
       "p_source": 0.8,
@@ -3079,8 +4395,8 @@
       "run_name": "mdlm_p080_b4_lr6_probe",
       "source": "mdlm",
       "source_step_count": 8100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3096,7 +4412,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p090_b256_lr0p666667_probe",
       "p_source": 0.9,
@@ -3106,8 +4427,8 @@
       "run_name": "mdlm_p090_b256_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3150,7 +4471,12 @@
       "lr_mult": 6.0,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p090_b256_lr6_probe",
       "p_source": 0.9,
@@ -3160,8 +4486,8 @@
       "run_name": "mdlm_p090_b256_lr6_probe",
       "source": "mdlm",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3177,7 +4503,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p090_b64_lr0p666667_probe",
       "p_source": 0.9,
@@ -3187,8 +4518,8 @@
       "run_name": "mdlm_p090_b64_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3231,7 +4562,12 @@
       "lr_mult": 6.0,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p090_b64_lr6_probe",
       "p_source": 0.9,
@@ -3241,8 +4577,8 @@
       "run_name": "mdlm_p090_b64_lr6_probe",
       "source": "mdlm",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3258,7 +4594,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p090_b16_lr0p666667_probe",
       "p_source": 0.9,
@@ -3268,8 +4609,8 @@
       "run_name": "mdlm_p090_b16_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3312,7 +4653,12 @@
       "lr_mult": 6.0,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p090_b16_lr6_probe",
       "p_source": 0.9,
@@ -3322,8 +4668,8 @@
       "run_name": "mdlm_p090_b16_lr6_probe",
       "source": "mdlm",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3339,7 +4685,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p090_b4_lr0p666667_probe",
       "p_source": 0.9,
@@ -3349,8 +4700,8 @@
       "run_name": "mdlm_p090_b4_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3393,7 +4744,12 @@
       "lr_mult": 6.0,
       "max_steps": 10150,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p090_b4_lr6_probe",
       "p_source": 0.9,
@@ -3403,8 +4759,8 @@
       "run_name": "mdlm_p090_b4_lr6_probe",
       "source": "mdlm",
       "source_step_count": 9100,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3420,7 +4776,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p095_b256_lr0p666667_probe",
       "p_source": 0.95,
@@ -3430,8 +4791,8 @@
       "run_name": "mdlm_p095_b256_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3474,7 +4835,12 @@
       "lr_mult": 6.0,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p095_b256_lr6_probe",
       "p_source": 0.95,
@@ -3484,8 +4850,8 @@
       "run_name": "mdlm_p095_b256_lr6_probe",
       "source": "mdlm",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3501,7 +4867,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p095_b64_lr0p666667_probe",
       "p_source": 0.95,
@@ -3511,8 +4882,8 @@
       "run_name": "mdlm_p095_b64_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3555,7 +4926,12 @@
       "lr_mult": 6.0,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p095_b64_lr6_probe",
       "p_source": 0.95,
@@ -3565,8 +4941,8 @@
       "run_name": "mdlm_p095_b64_lr6_probe",
       "source": "mdlm",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3582,7 +4958,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p095_b16_lr0p666667_probe",
       "p_source": 0.95,
@@ -3592,8 +4973,8 @@
       "run_name": "mdlm_p095_b16_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3636,7 +5017,12 @@
       "lr_mult": 6.0,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p095_b16_lr6_probe",
       "p_source": 0.95,
@@ -3646,8 +5032,8 @@
       "run_name": "mdlm_p095_b16_lr6_probe",
       "source": "mdlm",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3663,7 +5049,12 @@
       "lr_mult": 0.6666666666666666,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p095_b4_lr0p666667_probe",
       "p_source": 0.95,
@@ -3673,8 +5064,8 @@
       "run_name": "mdlm_p095_b4_lr0p666667_probe",
       "source": "mdlm",
       "source_step_count": 9600,
-      "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
     },
     {
       "attempts": 0,
@@ -3717,7 +5108,12 @@
       "lr_mult": 6.0,
       "max_steps": 10650,
       "metrics": {},
-      "notes": [],
+      "notes": [
+        {
+          "at": "2026-04-27T06:38:34Z",
+          "text": "Skipped by operator decision after first p030/b256 LR sweep; use lr_mult=2.0 for switch probes."
+        }
+      ],
       "objective": "bd3lm",
       "output_dir": "runs/bd3_curriculum_moe_old_bundle/mdlm_p095_b4_lr6_probe",
       "p_source": 0.95,
@@ -3727,10 +5123,747 @@
       "run_name": "mdlm_p095_b4_lr6_probe",
       "source": "mdlm",
       "source_step_count": 9600,
+      "status": "skipped",
+      "updated_at": "2026-04-27T06:38:34Z"
+    },
+    {
+      "attempts": 1,
+      "block_len": 256,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr2_full/checkpoints/final",
+      "command": [
+        "/opt/conda/bin/python",
+        "train_ar.py",
+        "--config",
+        "configs/experiments/mdlm_moe_old_bundle.yaml",
+        "--objective",
+        "bd3lm",
+        "--seed",
+        "42",
+        "--run-name",
+        "ar_p030_b256_lr2_full",
+        "--output-dir",
+        "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr2_full",
+        "--log-jsonl",
+        "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr2_full/train.jsonl",
+        "--max-steps",
+        "10100",
+        "--warmup-steps",
+        "100",
+        "--batch-size",
+        "512",
+        "--grad-accum-steps",
+        "1",
+        "--data-parallel",
+        "--num-devices",
+        "4",
+        "--context-length",
+        "512",
+        "--attention-impl",
+        "cudnn",
+        "--attn-val-residual",
+        "--no-moe-split-router-input",
+        "--moe-router-z-loss-weight",
+        "0.01",
+        "--lr-mult",
+        "2",
+        "--eval-batches",
+        "4",
+        "--log-every",
+        "50",
+        "--checkpoint-interval",
+        "0",
+        "--no-wandb-checkpoints",
+        "--wandb-group",
+        "bd3_curriculum_moe_old_bundle",
+        "--restore-checkpoint",
+        "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100/checkpoints/final",
+        "--vocab-size",
+        "8192",
+        "--mask-token-id",
+        "8192",
+        "--diffusion-steps",
+        "100",
+        "--t-min",
+        "0.45",
+        "--t-max",
+        "0.95",
+        "--noise-schedule",
+        "linear",
+        "--eval-t-frac",
+        "0.6",
+        "--bd3-block-len",
+        "256",
+        "--bd3-attention",
+        "dense",
+        "--wandb-tags",
+        "bd3_curriculum",
+        "moe",
+        "old_bundle",
+        "switch_full",
+        "ar",
+        "bd3lm",
+        "b256",
+        "p030"
+      ],
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to03100"
+      ],
+      "id": "ar_p030_b256_lr2_full",
+      "launcher_log": "runs/bd3_curriculum_moe_old_bundle/_launcher_logs/ar_p030_b256_lr2_full.log",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b256_lr2_full",
+      "p_source": 0.3,
+      "phase": "switch_full",
+      "post_switch_steps": 7000,
+      "probe_parent": "ar_p030_b256_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100/checkpoints/final",
+      "run_name": "ar_p030_b256_lr2_full",
+      "source": "ar",
+      "source_step_count": 3100,
+      "started_at": "2026-04-27T06:43:56Z",
+      "status": "running",
+      "updated_at": "2026-04-27T06:43:56Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 64,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b64_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to03100"
+      ],
+      "id": "ar_p030_b64_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b64_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b64_lr2_full",
+      "p_source": 0.3,
+      "phase": "switch_full",
+      "post_switch_steps": 7000,
+      "probe_parent": "ar_p030_b64_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100/checkpoints/final",
+      "run_name": "ar_p030_b64_lr2_full",
+      "source": "ar",
+      "source_step_count": 3100,
       "status": "pending",
-      "updated_at": "2026-04-27T04:47:47Z"
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 16,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b16_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to03100"
+      ],
+      "id": "ar_p030_b16_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b16_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b16_lr2_full",
+      "p_source": 0.3,
+      "phase": "switch_full",
+      "post_switch_steps": 7000,
+      "probe_parent": "ar_p030_b16_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100/checkpoints/final",
+      "run_name": "ar_p030_b16_lr2_full",
+      "source": "ar",
+      "source_step_count": 3100,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 4,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b4_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to03100"
+      ],
+      "id": "ar_p030_b4_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b4_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p030_b4_lr2_full",
+      "p_source": 0.3,
+      "phase": "switch_full",
+      "post_switch_steps": 7000,
+      "probe_parent": "ar_p030_b4_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to03100/checkpoints/final",
+      "run_name": "ar_p030_b4_lr2_full",
+      "source": "ar",
+      "source_step_count": 3100,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 256,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b256_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to05100"
+      ],
+      "id": "ar_p050_b256_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b256_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b256_lr2_full",
+      "p_source": 0.5,
+      "phase": "switch_full",
+      "post_switch_steps": 5000,
+      "probe_parent": "ar_p050_b256_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to05100/checkpoints/final",
+      "run_name": "ar_p050_b256_lr2_full",
+      "source": "ar",
+      "source_step_count": 5100,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 64,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b64_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to05100"
+      ],
+      "id": "ar_p050_b64_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b64_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b64_lr2_full",
+      "p_source": 0.5,
+      "phase": "switch_full",
+      "post_switch_steps": 5000,
+      "probe_parent": "ar_p050_b64_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to05100/checkpoints/final",
+      "run_name": "ar_p050_b64_lr2_full",
+      "source": "ar",
+      "source_step_count": 5100,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 16,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b16_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to05100"
+      ],
+      "id": "ar_p050_b16_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b16_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b16_lr2_full",
+      "p_source": 0.5,
+      "phase": "switch_full",
+      "post_switch_steps": 5000,
+      "probe_parent": "ar_p050_b16_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to05100/checkpoints/final",
+      "run_name": "ar_p050_b16_lr2_full",
+      "source": "ar",
+      "source_step_count": 5100,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 4,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b4_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to05100"
+      ],
+      "id": "ar_p050_b4_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b4_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p050_b4_lr2_full",
+      "p_source": 0.5,
+      "phase": "switch_full",
+      "post_switch_steps": 5000,
+      "probe_parent": "ar_p050_b4_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to05100/checkpoints/final",
+      "run_name": "ar_p050_b4_lr2_full",
+      "source": "ar",
+      "source_step_count": 5100,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 256,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b256_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to08100"
+      ],
+      "id": "ar_p080_b256_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b256_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b256_lr2_full",
+      "p_source": 0.8,
+      "phase": "switch_full",
+      "post_switch_steps": 2000,
+      "probe_parent": "ar_p080_b256_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to08100/checkpoints/final",
+      "run_name": "ar_p080_b256_lr2_full",
+      "source": "ar",
+      "source_step_count": 8100,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 64,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b64_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to08100"
+      ],
+      "id": "ar_p080_b64_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b64_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b64_lr2_full",
+      "p_source": 0.8,
+      "phase": "switch_full",
+      "post_switch_steps": 2000,
+      "probe_parent": "ar_p080_b64_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to08100/checkpoints/final",
+      "run_name": "ar_p080_b64_lr2_full",
+      "source": "ar",
+      "source_step_count": 8100,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 16,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b16_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to08100"
+      ],
+      "id": "ar_p080_b16_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b16_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b16_lr2_full",
+      "p_source": 0.8,
+      "phase": "switch_full",
+      "post_switch_steps": 2000,
+      "probe_parent": "ar_p080_b16_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to08100/checkpoints/final",
+      "run_name": "ar_p080_b16_lr2_full",
+      "source": "ar",
+      "source_step_count": 8100,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 4,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b4_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to08100"
+      ],
+      "id": "ar_p080_b4_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b4_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p080_b4_lr2_full",
+      "p_source": 0.8,
+      "phase": "switch_full",
+      "post_switch_steps": 2000,
+      "probe_parent": "ar_p080_b4_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to08100/checkpoints/final",
+      "run_name": "ar_p080_b4_lr2_full",
+      "source": "ar",
+      "source_step_count": 8100,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 256,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b256_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to09100"
+      ],
+      "id": "ar_p090_b256_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b256_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b256_lr2_full",
+      "p_source": 0.9,
+      "phase": "switch_full",
+      "post_switch_steps": 1000,
+      "probe_parent": "ar_p090_b256_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to09100/checkpoints/final",
+      "run_name": "ar_p090_b256_lr2_full",
+      "source": "ar",
+      "source_step_count": 9100,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 64,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b64_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to09100"
+      ],
+      "id": "ar_p090_b64_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b64_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b64_lr2_full",
+      "p_source": 0.9,
+      "phase": "switch_full",
+      "post_switch_steps": 1000,
+      "probe_parent": "ar_p090_b64_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to09100/checkpoints/final",
+      "run_name": "ar_p090_b64_lr2_full",
+      "source": "ar",
+      "source_step_count": 9100,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 16,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b16_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to09100"
+      ],
+      "id": "ar_p090_b16_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b16_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b16_lr2_full",
+      "p_source": 0.9,
+      "phase": "switch_full",
+      "post_switch_steps": 1000,
+      "probe_parent": "ar_p090_b16_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to09100/checkpoints/final",
+      "run_name": "ar_p090_b16_lr2_full",
+      "source": "ar",
+      "source_step_count": 9100,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 4,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b4_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to09100"
+      ],
+      "id": "ar_p090_b4_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b4_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p090_b4_lr2_full",
+      "p_source": 0.9,
+      "phase": "switch_full",
+      "post_switch_steps": 1000,
+      "probe_parent": "ar_p090_b4_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to09100/checkpoints/final",
+      "run_name": "ar_p090_b4_lr2_full",
+      "source": "ar",
+      "source_step_count": 9100,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 256,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b256_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to09600"
+      ],
+      "id": "ar_p095_b256_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b256_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b256_lr2_full",
+      "p_source": 0.95,
+      "phase": "switch_full",
+      "post_switch_steps": 500,
+      "probe_parent": "ar_p095_b256_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to09600/checkpoints/final",
+      "run_name": "ar_p095_b256_lr2_full",
+      "source": "ar",
+      "source_step_count": 9600,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 64,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b64_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to09600"
+      ],
+      "id": "ar_p095_b64_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b64_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b64_lr2_full",
+      "p_source": 0.95,
+      "phase": "switch_full",
+      "post_switch_steps": 500,
+      "probe_parent": "ar_p095_b64_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to09600/checkpoints/final",
+      "run_name": "ar_p095_b64_lr2_full",
+      "source": "ar",
+      "source_step_count": 9600,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 16,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b16_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to09600"
+      ],
+      "id": "ar_p095_b16_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b16_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b16_lr2_full",
+      "p_source": 0.95,
+      "phase": "switch_full",
+      "post_switch_steps": 500,
+      "probe_parent": "ar_p095_b16_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to09600/checkpoints/final",
+      "run_name": "ar_p095_b16_lr2_full",
+      "source": "ar",
+      "source_step_count": 9600,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
+    },
+    {
+      "attempts": 0,
+      "block_len": 4,
+      "checkpoint_path": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b4_lr2_full/checkpoints/final",
+      "config": "configs/experiments/mdlm_moe_old_bundle.yaml",
+      "created_at": "2026-04-27T06:42:25Z",
+      "dependencies": [
+        "source_ar_to09600"
+      ],
+      "id": "ar_p095_b4_lr2_full",
+      "log_jsonl": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b4_lr2_full/train.jsonl",
+      "lr_mult": 2.0,
+      "max_steps": 10100,
+      "metrics": {},
+      "notes": [
+        {
+          "at": "2026-04-27T06:42:25Z",
+          "text": "Created directly from operator policy: use lr_mult=2.0 full continuation without further LR probing."
+        }
+      ],
+      "objective": "bd3lm",
+      "output_dir": "runs/bd3_curriculum_moe_old_bundle/ar_p095_b4_lr2_full",
+      "p_source": 0.95,
+      "phase": "switch_full",
+      "post_switch_steps": 500,
+      "probe_parent": "ar_p095_b4_lr2_probe",
+      "restore_checkpoint": "runs/bd3_curriculum_moe_old_bundle/source_ar_to09600/checkpoints/final",
+      "run_name": "ar_p095_b4_lr2_full",
+      "source": "ar",
+      "source_step_count": 9600,
+      "status": "pending",
+      "updated_at": "2026-04-27T06:42:25Z"
     }
   ],
   "schema_version": 1,
-  "updated_at": "2026-04-27T04:47:59Z"
+  "updated_at": "2026-04-27T06:43:56Z"
 }
