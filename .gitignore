@@ -18,7 +18,8 @@ aws/
 **/*.log
 **/*.sh
 **/*.ipynb
-# Local ClimbMix dataset shards stay out of git.
+# Local datasets stay out of git; data/ scripts remain trackable.
+data/climbmix/
 data/climbmix_24x_newtok_8192/
 data_tokenized/
 **/__pycache__
