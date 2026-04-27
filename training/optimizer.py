@@ -5,8 +5,8 @@ small-GPT experiments while keeping only three LR families for the
 tied-embedding JAX model:
 
 * AdamW table params: token embedding / tied lm head.
-* AdamW value-embedding params: table rows use the table LR; a split mask
-  value vector can use an independently tunable LR and betas.
+* AdamW value-embedding params: table rows and a split mask value vector can use
+  independently tunable LRs and betas.
 * AdamW scalar/vector params: norms, QK gain, value-residual scalars.
 * NorMuon with cautious weight decay for the remaining matrix parameters.
 """
@@ -27,6 +27,7 @@ Array = jax.Array
 @dataclass(frozen=True)
 class NormuonAdamWConfig:
     table_adam_lr: float = 7e-3
+    value_embedding_table_adam_lr: float | None = None
     value_embedding_mask_adam_lr: float | None = None
     scalar_adam_lr: float = 7e-3
     router_adam_lr: float = 1e-3
@@ -110,8 +111,8 @@ def build_param_specs(model) -> nnx.State:
     return nnx.from_flat_state(flat, cls=nnx.State)
 
 
-def learning_rates(step: Array, cfg: NormuonAdamWConfig) -> tuple[Array, Array, Array, Array, Array]:
-    """Return table, VE-mask, scalar, router, and Muon LRs for this step."""
+def learning_rates(step: Array, cfg: NormuonAdamWConfig) -> tuple[Array, Array, Array, Array, Array, Array]:
+    """Return table, VE-table, VE-mask, scalar, router, and Muon LRs for this step."""
     step_f = step.astype(jnp.float32)
     warmup = max(int(cfg.warmup_steps), 1)
     if cfg.scheduler == "warmup_stable":
@@ -120,13 +121,19 @@ def learning_rates(step: Array, cfg: NormuonAdamWConfig) -> tuple[Array, Array, 
         mult = jnp.ones((), dtype=jnp.float32)
     else:
         raise ValueError(f"Unsupported scheduler: {cfg.scheduler!r}")
-    ve_mask_lr = (
+    ve_table_lr = (
         cfg.table_adam_lr
+        if cfg.value_embedding_table_adam_lr is None
+        else cfg.value_embedding_table_adam_lr
+    )
+    ve_mask_lr = (
+        ve_table_lr
         if cfg.value_embedding_mask_adam_lr is None
         else cfg.value_embedding_mask_adam_lr
     )
     return (
         cfg.table_adam_lr * mult,
+        ve_table_lr * mult,
         ve_mask_lr * mult,
         cfg.scalar_adam_lr * mult,
         cfg.router_adam_lr * mult,
@@ -231,7 +238,7 @@ def create_normuon_adamw(model, cfg: NormuonAdamWConfig) -> optax.GradientTransf
         )
 
     def update_fn(grads, state: NormuonAdamWState, params):
-        table_adam_lr, ve_mask_adam_lr, scalar_adam_lr, router_adam_lr, muon_lr = learning_rates(state.count, cfg)
+        table_adam_lr, ve_table_adam_lr, ve_mask_adam_lr, scalar_adam_lr, router_adam_lr, muon_lr = learning_rates(state.count, cfg)
         muon_momentum = _muon_momentum(state.count, cfg)
         t = state.count.astype(jnp.float32) + 1.0
 
@@ -240,7 +247,7 @@ def create_normuon_adamw(model, cfg: NormuonAdamWConfig) -> optax.GradientTransf
                 if spec.kind == "adam_table":
                     adam_lr = table_adam_lr
                 elif spec.kind == "adam_ve_table":
-                    adam_lr = table_adam_lr
+                    adam_lr = ve_table_adam_lr
                 elif spec.kind == "adam_ve_mask":
                     adam_lr = ve_mask_adam_lr
                 elif spec.kind == "adam_router":

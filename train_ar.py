@@ -665,16 +665,20 @@ def main():
         moe_drop_tokens=args.moe_drop_tokens,
     )
     table_adam_lr_base = args.table_adam_lr if args.adam_lr is None else args.adam_lr
-    value_embedding_mask_adam_lr_base = (
-        args.value_embedding_mask_adam_lr
-        if args.value_embedding_mask_adam_lr is not None
+    value_embedding_table_adam_lr_base = (
+        table_adam_lr_base
+        if args.value_embedding_table_adam_lr is None
         else args.value_embedding_table_adam_lr
-        if args.value_embedding_table_adam_lr is not None
-        else table_adam_lr_base
+    )
+    value_embedding_mask_adam_lr_base = (
+        value_embedding_table_adam_lr_base
+        if args.value_embedding_mask_adam_lr is None
+        else args.value_embedding_mask_adam_lr
     )
     scalar_adam_lr_base = args.scalar_adam_lr if args.adam_lr is None else args.adam_lr
     opt_cfg = NormuonAdamWConfig(
         table_adam_lr=table_adam_lr_base * args.lr_mult,
+        value_embedding_table_adam_lr=value_embedding_table_adam_lr_base * args.lr_mult,
         value_embedding_mask_adam_lr=value_embedding_mask_adam_lr_base * args.lr_mult,
         scalar_adam_lr=scalar_adam_lr_base * args.lr_mult,
         router_adam_lr=args.router_adam_lr * args.lr_mult,
@@ -873,11 +877,13 @@ def main():
         "optimizer": "NorMuonCWD+AdamW",
         "lr_mult": args.lr_mult,
         "table_adam_lr_base": table_adam_lr_base,
+        "value_embedding_table_adam_lr_base": value_embedding_table_adam_lr_base,
         "value_embedding_mask_adam_lr_base": value_embedding_mask_adam_lr_base,
         "scalar_adam_lr_base": scalar_adam_lr_base,
         "router_adam_lr_base": args.router_adam_lr,
         "muon_lr_base": args.muon_lr,
         "table_adam_lr_peak": opt_cfg.table_adam_lr,
+        "value_embedding_table_adam_lr_peak": opt_cfg.value_embedding_table_adam_lr,
         "value_embedding_mask_adam_lr_peak": opt_cfg.value_embedding_mask_adam_lr,
         "scalar_adam_lr_peak": opt_cfg.scalar_adam_lr,
         "router_adam_lr_peak": opt_cfg.router_adam_lr,
@@ -1158,7 +1164,14 @@ def main():
             if step >= args.measure_start_step:
                 measured_time += elapsed
                 measured_steps += 1
-            table_adam_lr, ve_mask_adam_lr, scalar_adam_lr, router_adam_lr, muon_lr = learning_rates(jnp.asarray(step, dtype=jnp.int32), opt_cfg)
+            (
+                table_adam_lr,
+                ve_table_adam_lr,
+                ve_mask_adam_lr,
+                scalar_adam_lr,
+                router_adam_lr,
+                muon_lr,
+            ) = learning_rates(jnp.asarray(step, dtype=jnp.int32), opt_cfg)
             row = {
                 "step": step,
                 "loss": loss_value,
@@ -1166,6 +1179,7 @@ def main():
                 "total_loss": float(metrics["total_loss"]),
                 "grad_norm": float(metrics["grad_norm"]),
                 "table_adam_lr": float(table_adam_lr),
+                "value_embedding_table_adam_lr": float(ve_table_adam_lr),
                 "value_embedding_mask_adam_lr": float(ve_mask_adam_lr),
                 "scalar_adam_lr": float(scalar_adam_lr),
                 "router_adam_lr": float(router_adam_lr),
@@ -1231,6 +1245,7 @@ def main():
                     f"step={step:05d} loss={row['loss']:.4f}{eval_text} "
                     f"z={row['z_loss']:.4f}{sup_text}{moe_text} grad_norm={row['grad_norm']:.3f} "
                     f"table_lr={row['table_adam_lr']:.3e} "
+                    f"ve_table_lr={row['value_embedding_table_adam_lr']:.3e} "
                     f"ve_mask_lr={row['value_embedding_mask_adam_lr']:.3e} "
                     f"scalar_lr={row['scalar_adam_lr']:.3e} "
                     f"router_lr={row['router_adam_lr']:.3e} "

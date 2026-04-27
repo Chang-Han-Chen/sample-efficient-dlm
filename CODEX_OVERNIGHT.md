@@ -291,6 +291,7 @@
   - VE `lr_mult=2.0` W&B-checkpoint attempt: run `ar_moe_value_embedding_no_vr_nogain_lr2p0_nonsplit_zloss0p01_wandbckpt1k`, W&B id `9xerzca4`, log `runs/moe_matrix/ar_moe_value_embedding_no_vr_nogain_lr2p0_nonsplit_zloss0p01_wandbckpt1k/train.jsonl`.
   - VE `lr_mult=1.0` probe: run `ar_moe_ve_nonsplit_z0p01_lr1p0_probe_1k`, W&B id `yrt9w3du`, log `runs/moe_matrix/ar_moe_ve_nonsplit_z0p01_lr1p0_probe_1k/train.jsonl`.
   - VE `lr_mult=0.8` probe: run `ar_moe_ve_nonsplit_z0p01_lr0p8_probe_1k`, W&B id `vyo9podz`, log `runs/moe_matrix/ar_moe_ve_nonsplit_z0p01_lr0p8_probe_1k/train.jsonl`.
+  - VE table-LR probe: run `ar_moe_ve_nonsplit_z0p01_lr1p0_vetbl0p005_probe_1k`, W&B id `3pt0qxai`, log `runs/moe_matrix/ar_moe_ve_nonsplit_z0p01_lr1p0_vetbl0p005_probe_1k/train.jsonl`.
 - `lr_mult=2.0` VE probe:
   - Run: `ar_moe_value_embedding_no_vr_nogain_lr2p0_nonsplit_zloss0p01_wandbckpt1k` / W&B run id `9xerzca4`.
   - Stopped after the 1K checkpoint/upload issue; JSONL still contains a complete 1K probe through step `999`.
@@ -313,10 +314,22 @@
   - Tail-100 drop `0.0244`, tail router entropy `0.857`.
   - Routing was cleaner in the tail than `lr_mult=1.0`, but the loss curve was slower and had a bad mid-run event: step `650` eval `4.2930`, drop `0.1914`, grad norm `237`.
   - Conclusion: lowering all LRs below `1.0` is too slow and does not make VE competitive.
+- VE table-LR wiring and probe:
+  - Fixed the existing `--value-embedding-table-adam-lr` flag so it actually controls the normal AR value-embedding table optimizer group. Before this, `adam_ve_table` still used `table_adam_lr`; the flag only affected the split mask-token fallback path.
+  - `training/optimizer.py` now has `value_embedding_table_adam_lr`; `adam_ve_table` uses `ve_table_adam_lr`; `train_ar.py` logs both `value_embedding_table_adam_lr` and `value_embedding_mask_adam_lr`.
+  - Verification: `python -m py_compile train_ar.py training/optimizer.py` passed.
+  - Probe: `ar_moe_ve_nonsplit_z0p01_lr1p0_vetbl0p005_probe_1k` / W&B run id `3pt0qxai`.
+  - Config delta from the `lr_mult=1.0` VE probe: token table LR stayed `0.010`, router LR stayed `0.001`, Muon stayed `0.040`, but VE table LR was reduced to `0.005`.
+  - Completed `1000` steps with no checkpoints.
+  - Best eval `3.2184 @900`; last eval `3.8186 @950`.
+  - Step time mean `0.3359s`, median `0.3309s`.
+  - Early/mid-run improved over previous VE `lr_mult=1.0`: at step `450`, `3.4227` vs previous `3.6901`, with drop `0.0130` vs `0.0710`.
+  - The run then had a late routing shock: step `950` eval `3.8186`, drop `0.1948`, router entropy `0.739`, router z `0.391`; tail-100 drop was `0.1197`.
+  - Conclusion: reducing VE table LR helps the loss trajectory, but the MoE/router still needs additional stabilization before VE can be promoted.
 - Current VE verdict:
   - VE adds significant wall-time cost: about `0.34s/step`, versus `0.237s/step` for plain MoE and `0.266s/step` for the best old-bundle MoE checkpointed run.
-  - Global LR-only tuning has not made VE beat plain MoE. Best VE so far at 1K is `lr_mult=1.0` with `3.2618 @950`, still `+0.1092` worse than plain MoE at `950`.
-  - Next useful knob is probably not another global LR-only sweep. Try decoupling value-embedding/table LR from the rest, for example keep the MoE/global old-bundle dynamics closer to a stronger recipe while reducing only `value_embedding_mask_adam_lr` / table Adam pressure, or test whether VE should use a smaller scale/gated ramp.
+  - Global LR-only tuning did not make VE beat plain MoE. Decoupling VE table LR improved the best observed VE eval to `3.2184 @900`, but the run was not stable through `950`.
+  - Next useful knob is router/capacity stabilization on top of the lower VE table LR, or a smaller/ramped VE scale. Do not run a full VE candidate until a 1K probe beats plain MoE at the matched step without a late drop shock.
 
 ## Remaining notes
 
