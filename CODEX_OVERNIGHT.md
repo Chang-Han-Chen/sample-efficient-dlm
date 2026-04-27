@@ -292,6 +292,8 @@
   - VE `lr_mult=1.0` probe: run `ar_moe_ve_nonsplit_z0p01_lr1p0_probe_1k`, W&B id `yrt9w3du`, log `runs/moe_matrix/ar_moe_ve_nonsplit_z0p01_lr1p0_probe_1k/train.jsonl`.
   - VE `lr_mult=0.8` probe: run `ar_moe_ve_nonsplit_z0p01_lr0p8_probe_1k`, W&B id `vyo9podz`, log `runs/moe_matrix/ar_moe_ve_nonsplit_z0p01_lr0p8_probe_1k/train.jsonl`.
   - VE table-LR probe: run `ar_moe_ve_nonsplit_z0p01_lr1p0_vetbl0p005_probe_1k`, W&B id `3pt0qxai`, log `runs/moe_matrix/ar_moe_ve_nonsplit_z0p01_lr1p0_vetbl0p005_probe_1k/train.jsonl`.
+  - VE capacity-factor `2.0` diagnostic: run `ar_moe_ve_nonsplit_z0p01_lr1p0_vetbl0p005_cap2p0_probe_1k`, W&B id `df98quc7`, log `runs/moe_matrix/ar_moe_ve_nonsplit_z0p01_lr1p0_vetbl0p005_cap2p0_probe_1k/train.jsonl`.
+  - VE gain-ramp diagnostic: run `ar_moe_ve_nonsplit_z0p01_lr1p0_vetbl0p005_gain0_probe_1k`, W&B id `vgi6avym`, log `runs/moe_matrix/ar_moe_ve_nonsplit_z0p01_lr1p0_vetbl0p005_gain0_probe_1k/train.jsonl`.
 - `lr_mult=2.0` VE probe:
   - Run: `ar_moe_value_embedding_no_vr_nogain_lr2p0_nonsplit_zloss0p01_wandbckpt1k` / W&B run id `9xerzca4`.
   - Stopped after the 1K checkpoint/upload issue; JSONL still contains a complete 1K probe through step `999`.
@@ -326,13 +328,44 @@
   - Early/mid-run improved over previous VE `lr_mult=1.0`: at step `450`, `3.4227` vs previous `3.6901`, with drop `0.0130` vs `0.0710`.
   - The run then had a late routing shock: step `950` eval `3.8186`, drop `0.1948`, router entropy `0.739`, router z `0.391`; tail-100 drop was `0.1197`.
   - Conclusion: reducing VE table LR helps the loss trajectory, but the MoE/router still needs additional stabilization before VE can be promoted.
+- Capacity-factor `2.0` diagnostic:
+  - Run: `ar_moe_ve_nonsplit_z0p01_lr1p0_vetbl0p005_cap2p0_probe_1k` / W&B run id `df98quc7`.
+  - Config delta from the VE table-LR probe: `moe_capacity_factor: 2.0` instead of `1.25`; no checkpoints.
+  - Terminated after step `989`; it had already logged eval through step `950`.
+  - Best/last eval `3.3456 @950`.
+  - Step time mean `0.3741s`, median `0.3682s`.
+  - The larger capacity did what it was supposed to diagnostically: step `950` drop was `0.0000`, and late tail drop was much lower than the capacity `1.25` VE table-LR run.
+  - It did not solve loss or efficiency: step `950` eval `3.3456` was worse than VE table-LR capacity `1.25` best `3.2184 @900` and worse than plain MoE `3.1526 @950`, while wall time was much slower.
+  - Conclusion: the capacity cliff explains the late drop shock, but simply increasing capacity is not a competitive recipe.
+- VE gain-ramp diagnostic:
+  - Run: `ar_moe_ve_nonsplit_z0p01_lr1p0_vetbl0p005_gain0_probe_1k` / W&B run id `vgi6avym`.
+  - Config delta from the VE table-LR probe: `--value-embedding-gain --value-embedding-gain-init 0.0`, keeping `lr_mult=1.0`, VE table peak LR `0.005`, capacity `1.25`, and z-loss `0.01`; no checkpoints.
+  - Terminated after user request at about step `873`; evals through step `850` are available.
+  - Best eval `3.4675 @850`; earlier local best was `3.6023 @350`, then the run degraded around steps `550-750` before partially recovering.
+  - Routing was cleaner than the sharp capacity-`1.25` table-LR shock but still not clean enough: step `550` eval `3.8362`, drop `0.0639`, entropy `0.798`; step `750` drop `0.0903`; step `850` drop `0.0211`, entropy `0.798`.
+  - Step time mean `0.3531s`, median `0.3430s`, tail mean `0.3607s`.
+  - Conclusion: ramping VE from zero helps early routing compared with full-strength VE, but it does not make VE+MoE competitive with plain MoE or old-bundle MoE.
+- Dense AR comparison after VE probes:
+  - Best dense overall found in W&B is still dense old-bundle without value embeddings: run `ar_old_bundle`, W&B id `8fjqg6b9`.
+    - Config: QK-norm, value residual, per-head attention gating, layernorm scaling, no value embeddings, no MoE, `lr_mult=5.0`.
+    - Best eval `2.7686 @4450`; last eval `2.8000 @5050`.
+  - Best dense VE/no-value-residual run is `ar_value_embedding_no_vr_nogain_lr2p0_newtok_5k1_from500`, W&B id `dsezmr2u`, local log `runs/ar_matrix/ar_value_embedding_no_vr_nogain_lr2p0_5k1_from500/train.jsonl`.
+    - Config: QK-norm, per-head attention gating, layernorm scaling, value embeddings on alternating layers, no value residual, no trainable VE gain, `lr_mult=2.0`.
+    - Best eval `2.8480 @5000`; last eval `2.8895 @5050`.
+  - Best MoE old-bundle remains `ar_moe_old_bundle_nonsplit_lr2p0_zloss0p01_ckpt1k`, W&B id `9a1ik1kw`.
+    - Best eval `2.7523 @4450`; last eval `2.7792 @5050`.
+  - Against dense old-bundle, best MoE is a narrow but real win: best delta `-0.0163`, last-eval delta `-0.0208`.
+  - Against dense VE/no-VR, best MoE is a clear win: best delta `-0.0957`, last-eval delta `-0.1103`.
 - Current VE verdict:
   - VE adds significant wall-time cost: about `0.34s/step`, versus `0.237s/step` for plain MoE and `0.266s/step` for the best old-bundle MoE checkpointed run.
   - Global LR-only tuning did not make VE beat plain MoE. Decoupling VE table LR improved the best observed VE eval to `3.2184 @900`, but the run was not stable through `950`.
-  - Next useful knob is router/capacity stabilization on top of the lower VE table LR, or a smaller/ramped VE scale. Do not run a full VE candidate until a 1K probe beats plain MoE at the matched step without a late drop shock.
+  - Capacity `2.0` prevents the late capacity-drop shock but is slower and does not improve loss enough.
+  - The gain-ramp diagnostic did not rescue VE+MoE.
+  - Mainline recommendation: stop spending mainline time on VE+MoE. The serious AR path is old-bundle MoE without value embeddings, especially `ar_moe_old_bundle_nonsplit_lr2p0_zloss0p01_ckpt1k`.
+  - If VE is revisited, treat it as a mechanism/debugging project rather than the next candidate baseline. The most relevant implementation hypothesis is that `value_embedding_gate.weight` is still a matrix parameter trained by Muon; moving that gate to a low-LR Adam group may be worth testing only if we explicitly return to VE.
 
 ## Remaining notes
 
 - The focused MoE/config/data-parallel tests pass. A broader stack run seen earlier had three non-MoE numerical strictness failures: chunked CE weight-gradient differed by about `9.1e-5`; BD3 blocked attention differed from dense-mask attention by about `7.4e-4`; BD3 blocked model logits differed by about `3.0e-3`.
 - The best completed AR MoE recipe remains `ar_moe_old_bundle_nonsplit_lr2p0_zloss0p01_ckpt1k`.
-- For VE, do not launch a full 5.1K run until a 1K probe at least beats plain MoE at the matched step.
+- For VE+MoE, do not launch a full 5.1K run unless the goal is explicitly to study VE mechanics; current results say it is not worth pushing as the main AR MoE candidate.
