@@ -23,9 +23,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STATUS_PATH = REPO_ROOT / "status.json"
 LAUNCHER = REPO_ROOT / "scripts" / "bd3_curriculum_launcher.py"
 
-P_SLUGS = ["p030", "p050", "p080", "p090", "p095"]
-AR_BLOCK_LENS = [256, 64, 16, 4]
-SCRATCH_BLOCK_LENS = [256, 64]
+CURRENT_RUN_IDS = ["ar_p030_b4_lr2_full"]
+REMAINING_P_SLUGS = ["p050", "p080", "p090", "p095"]
+AR_BLOCK_LENS = [256, 4]
 TERMINAL_STATUSES = {"completed", "failed", "stopped", "skipped", "promoted"}
 
 METRIC_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=([-+0-9.eE]+)")
@@ -36,13 +36,11 @@ def load_status(path: Path) -> dict[str, Any]:
         return json.load(fh)
 
 
-def run_ids() -> list[str]:
-    ids = []
-    for p_slug in P_SLUGS:
+def default_run_ids() -> list[str]:
+    ids = list(CURRENT_RUN_IDS)
+    for p_slug in REMAINING_P_SLUGS:
         for block_len in AR_BLOCK_LENS:
             ids.append(f"ar_{p_slug}_b{block_len}_lr2_full")
-    for block_len in SCRATCH_BLOCK_LENS:
-        ids.append(f"scratch_b{block_len}_lr2_full")
     return ids
 
 
@@ -278,6 +276,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--status-path", type=Path, default=STATUS_PATH)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--run-id",
+        action="append",
+        default=None,
+        help="Explicit run id to include in the queue. Repeat to set order.",
+    )
     parser.add_argument("--poll-sec", type=float, default=60.0)
     parser.add_argument("--stale-sec", type=float, default=900.0)
     parser.add_argument("--health-print-sec", type=float, default=300.0)
@@ -288,7 +292,7 @@ def main() -> int:
     parser.add_argument("--recover-stale", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 
-    targets = run_ids()
+    targets = args.run_id or default_run_ids()
     print("target queue:", *targets, sep="\n  ", flush=True)
 
     while True:

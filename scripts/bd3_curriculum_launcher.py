@@ -26,6 +26,7 @@ DEFAULT_STATUS_PATH = REPO_ROOT / "status.json"
 
 RUN_ROOT = Path("runs/bd3_curriculum_moe_old_bundle")
 LAUNCHER_LOG_DIR = RUN_ROOT / "_launcher_logs"
+SKIP_LAUNCH_PATH = RUN_ROOT / "_skip_launches.txt"
 
 P_VALUES = [0.30, 0.50, 0.80, 0.90, 0.95]
 P_SLUGS = {
@@ -344,6 +345,18 @@ def write_status(path: Path, status: dict[str, Any]) -> None:
         json.dump(status, fh, indent=2, sort_keys=True)
         fh.write("\n")
     tmp.replace(path)
+
+
+def load_skip_launch_ids() -> set[str]:
+    path = abs_path(SKIP_LAUNCH_PATH)
+    if not path.exists():
+        return set()
+    skip_ids = set()
+    for line in path.read_text().splitlines():
+        run_id = line.split("#", 1)[0].strip()
+        if run_id:
+            skip_ids.add(run_id)
+    return skip_ids
 
 
 def runs_by_id(status: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -670,6 +683,16 @@ def cmd_next(args: argparse.Namespace) -> int:
 
 
 def launch_run(args: argparse.Namespace, status: dict[str, Any], run: dict[str, Any]) -> int:
+    if not args.force and run["id"] in load_skip_launch_ids():
+        run["status"] = "skipped"
+        run["updated_at"] = now_iso()
+        run.setdefault("notes", []).append(
+            {"at": now_iso(), "text": f"Skipped by launch policy {SKIP_LAUNCH_PATH}."}
+        )
+        write_status(args.status_path, status)
+        print(f"{run['id']} skipped by launch policy {SKIP_LAUNCH_PATH}")
+        return 0
+
     if run["status"] not in {"pending", "failed", "stopped"} and not args.force:
         print(f"{run['id']} has status {run['status']}; pass --force to launch anyway", file=sys.stderr)
         return 2
