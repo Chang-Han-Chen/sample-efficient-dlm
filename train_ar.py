@@ -1246,7 +1246,8 @@ def main():
             if checkpointing_enabled:
                 assert checkpoint_dir is not None
                 if args.checkpoint_interval > 0 and (step + 1) % args.checkpoint_interval == 0:
-                    periodic_path = checkpoint_dir / f"step_{step + 1:08d}"
+                    periodic_kind = f"step_{step + 1:08d}"
+                    periodic_path = checkpoint_dir / periodic_kind
                     save_training_checkpoint(
                         periodic_path,
                         model,
@@ -1259,8 +1260,14 @@ def main():
                         dataset_rng_state=None if dataset is None else dataset.rng.bit_generator.state,
                         eval_rng_state=eval_rng.bit_generator.state,
                     )
-                    checkpoint_paths[f"step_{step + 1:08d}"] = periodic_path
+                    checkpoint_paths[periodic_kind] = periodic_path
                     print(f"saved_checkpoint={periodic_path}", flush=True)
+                    if wandb_run is not None and args.wandb_checkpoints:
+                        upload_checkpoint_artifact(
+                            wandb_run,
+                            periodic_path,
+                            kind=periodic_kind,
+                        )
                 if (
                     args.save_best_checkpoint
                     and "eval_loss" in row

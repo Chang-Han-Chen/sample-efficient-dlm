@@ -241,7 +241,85 @@
   - Wall time per step: mean `0.2650s`, median `0.2561s`, essentially the same as the other old-bundle MoE full runs.
   - Conclusion: stronger router z-loss is the first split-router variant that stays stable through 5.1K. It does not clearly beat the old non-split full run on best eval, but it matches it within noise and gives a much cleaner router. This is the best current split-router recipe.
 
+## Non-split old-bundle + stronger z-loss checkpointed run
+
+- Launched the old, non-split router-input behavior again with stronger router z-loss and periodic local checkpoints:
+  - Run: `ar_moe_old_bundle_nonsplit_lr2p0_zloss0p01_ckpt1k`
+  - W&B run id: `9a1ik1kw`
+  - Output dir: `runs/moe_matrix/ar_moe_old_bundle_nonsplit_lr2p0_zloss0p01_ckpt1k`
+  - Local log: `runs/moe_matrix/ar_moe_old_bundle_nonsplit_lr2p0_zloss0p01_ckpt1k/train.jsonl`
+  - Config: `configs/experiments/ar_moe_old_bundle.yaml`, `--max-steps 5100`, `--warmup-steps 100`, `--lr-mult 2.0`, `--no-moe-split-router-input`, `--moe-router-z-loss-weight 0.01`.
+  - Checkpointing: `--checkpoint-interval 1000`, `--no-save-best-checkpoint`, `--no-wandb-checkpoints`; local checkpoint dirs were written for `step_00001000`, `step_00002000`, `step_00003000`, `step_00004000`, `step_00005000`, and `final`.
+- Completed `5100` train steps: JSONL rows `5100`, last train step `5099`, last eval step `5050`.
+- Best eval was `2.7523` at step `4450`; last eval was `2.7792` at step `5050`.
+- Comparison against completed full runs:
+  - Plain AR MoE baseline `ar_moe_baseline_lr0p8`: best `2.8062 @4800`, last `2.8380 @5050`.
+  - Old non-split z-loss `0.001` run `ar_moe_old_bundle_lr2p0_full_nockpt`: best `2.7564 @4800`, last `2.8000 @5050`.
+  - Split-router z-loss `0.01` run `ar_moe_old_bundle_splitrouter_lr2p0_zloss0p01_full_nockpt`: best `2.7621 @4450`, last `2.7946 @5050`.
+  - This checkpointed non-split z-loss `0.01` run is currently the best by best eval and last eval: `-0.0041` better than old non-split z-loss `0.001` best, `-0.0098` better than split z-loss `0.01` best, and `-0.0539` better than plain MoE best.
+- Routing/optimizer diagnostics:
+  - Tail from step `5000` onward: mean drop `0.00027`, mean router entropy `0.9776`, mean pre-clip grad norm `0.0541`.
+  - Tail from step `4500` onward: mean drop `0.0039`, mean router entropy `0.975`.
+  - Recent eval rows show an isolated routing/drop event around step `4700` (`eval 2.8530`, drop `0.0219`, entropy `0.959`, z `0.092`), but it recovered by step `4800` and ended cleanly.
+- Wall time per step: mean `0.2664s`, median `0.2574s`. This is essentially the same as the other old-bundle MoE full runs; checkpoint saves are included in the mean, so the small slowdown versus no-checkpoint old-bundle runs is expected.
+- Current verdict:
+  - Push forward the non-split old-bundle recipe with `lr_mult=2.0` and router z-loss weight `0.01`.
+  - The split-router idea is still principled and stable with stronger z-loss, but in the completed 5.1K comparisons it did not beat the simpler non-split stronger-z-loss run.
+  - The stronger z-loss appears useful even without the split: it keeps router entropy higher and z metrics lower while slightly improving loss.
+
+## AR MoE value-embedding probes
+
+- Moved to the final AR candidate: MoE + value embeddings.
+- Meaning of the candidate:
+  - Config: `configs/experiments/ar_moe_value_embedding.yaml`.
+  - AR objective, QK-norm, per-head attention gating, layernorm scaling.
+  - `attn_val_residual: false`.
+  - `value_embedding: true`, `value_embedding_layers: alternating`, `value_embedding_scale: 1.0`, `value_embedding_gain: false`.
+  - MoE and value embeddings are colocated on alternating layers `[1, 3, 5, 7]`.
+  - The MoE recipe was updated to inherit the best old-bundle MoE settings so far: `moe_split_router_input: false`, `moe_router_z_loss_weight: 0.01`, and local checkpoints every `1000` steps.
+- Checkpointing decision:
+  - Briefly tried W&B checkpoint artifacts for 1K periodic checkpoints in `ar_moe_value_embedding_no_vr_nogain_lr2p0_nonsplit_zloss0p01_wandbckpt1k`.
+  - The first checkpoint directory was about `1.5G`; artifact upload blocked the training loop after step `999`.
+  - Patched `train_ar.py` so that if `wandb_checkpoints: true` is used later, periodic checkpoints upload immediately when saved, but the current config default is back to local-only: `checkpoint_interval: 1000`, `save_best_checkpoint: false`, `wandb_checkpoints: false`.
+- Run lookup index:
+  - W&B project: `y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm`.
+  - Plain MoE baseline: run `ar_moe_baseline_lr0p8`, W&B id `n0dh3ffk`, log `runs/moe_matrix/ar_moe_baseline_lr0p8/train.jsonl`.
+  - Old-bundle non-split z-loss `0.001`: run `ar_moe_old_bundle_lr2p0_full_nockpt`, W&B id `tpesv0nb`, log `runs/moe_matrix/ar_moe_old_bundle_lr2p0_full_nockpt/train.jsonl`.
+  - Split-router z-loss `0.01`: run `ar_moe_old_bundle_splitrouter_lr2p0_zloss0p01_full_nockpt`, W&B id `13fqp3bd`, log `runs/moe_matrix/ar_moe_old_bundle_splitrouter_lr2p0_zloss0p01_full_nockpt/train.jsonl`.
+  - Best old-bundle non-split z-loss `0.01`: run `ar_moe_old_bundle_nonsplit_lr2p0_zloss0p01_ckpt1k`, W&B id `9a1ik1kw`, log `runs/moe_matrix/ar_moe_old_bundle_nonsplit_lr2p0_zloss0p01_ckpt1k/train.jsonl`, local checkpoints under `runs/moe_matrix/ar_moe_old_bundle_nonsplit_lr2p0_zloss0p01_ckpt1k/checkpoints/`.
+  - Aborted VE local-only first launch: run `ar_moe_value_embedding_no_vr_nogain_lr2p0_nonsplit_zloss0p01_ckpt1k`, W&B id `6445buov`, log `runs/moe_matrix/ar_moe_value_embedding_no_vr_nogain_lr2p0_nonsplit_zloss0p01_ckpt1k/train.jsonl`; stopped at step `341` and not used for the verdict.
+  - VE `lr_mult=2.0` W&B-checkpoint attempt: run `ar_moe_value_embedding_no_vr_nogain_lr2p0_nonsplit_zloss0p01_wandbckpt1k`, W&B id `9xerzca4`, log `runs/moe_matrix/ar_moe_value_embedding_no_vr_nogain_lr2p0_nonsplit_zloss0p01_wandbckpt1k/train.jsonl`.
+  - VE `lr_mult=1.0` probe: run `ar_moe_ve_nonsplit_z0p01_lr1p0_probe_1k`, W&B id `yrt9w3du`, log `runs/moe_matrix/ar_moe_ve_nonsplit_z0p01_lr1p0_probe_1k/train.jsonl`.
+  - VE `lr_mult=0.8` probe: run `ar_moe_ve_nonsplit_z0p01_lr0p8_probe_1k`, W&B id `vyo9podz`, log `runs/moe_matrix/ar_moe_ve_nonsplit_z0p01_lr0p8_probe_1k/train.jsonl`.
+- `lr_mult=2.0` VE probe:
+  - Run: `ar_moe_value_embedding_no_vr_nogain_lr2p0_nonsplit_zloss0p01_wandbckpt1k` / W&B run id `9xerzca4`.
+  - Stopped after the 1K checkpoint/upload issue; JSONL still contains a complete 1K probe through step `999`.
+  - Best eval `3.3318 @550`; last eval `3.3452 @950`.
+  - Step time mean `0.3420s`, median `0.3368s`.
+  - Routing was stressed late: tail-100 drop `0.0744`, tail router entropy `0.978`.
+  - Matched step `950`: VE `3.3452` vs plain MoE `3.1526` vs current best old-bundle MoE `3.1111`.
+- `lr_mult=1.0` VE probe:
+  - Run: `ar_moe_ve_nonsplit_z0p01_lr1p0_probe_1k` / W&B run id `yrt9w3du`.
+  - Completed `1000` steps with no checkpoints.
+  - Best/last eval `3.2618 @950`.
+  - Step time mean `0.3464s`, median `0.3427s`.
+  - Tail-100 drop `0.0315`, tail router entropy `0.887`.
+  - Lowering global LR from `2.0` helped loss and routing substantially, but it still did not beat plain MoE at the same step (`3.1526 @950`).
+- `lr_mult=0.8` VE probe:
+  - Run: `ar_moe_ve_nonsplit_z0p01_lr0p8_probe_1k` / W&B run id `vyo9podz`.
+  - Completed `1000` steps with no checkpoints.
+  - Best/last eval `3.4200 @950`.
+  - Step time mean `0.3450s`, median `0.3386s`.
+  - Tail-100 drop `0.0244`, tail router entropy `0.857`.
+  - Routing was cleaner in the tail than `lr_mult=1.0`, but the loss curve was slower and had a bad mid-run event: step `650` eval `4.2930`, drop `0.1914`, grad norm `237`.
+  - Conclusion: lowering all LRs below `1.0` is too slow and does not make VE competitive.
+- Current VE verdict:
+  - VE adds significant wall-time cost: about `0.34s/step`, versus `0.237s/step` for plain MoE and `0.266s/step` for the best old-bundle MoE checkpointed run.
+  - Global LR-only tuning has not made VE beat plain MoE. Best VE so far at 1K is `lr_mult=1.0` with `3.2618 @950`, still `+0.1092` worse than plain MoE at `950`.
+  - Next useful knob is probably not another global LR-only sweep. Try decoupling value-embedding/table LR from the rest, for example keep the MoE/global old-bundle dynamics closer to a stronger recipe while reducing only `value_embedding_mask_adam_lr` / table Adam pressure, or test whether VE should use a smaller scale/gated ramp.
+
 ## Remaining notes
 
 - The focused MoE/config/data-parallel tests pass. A broader stack run seen earlier had three non-MoE numerical strictness failures: chunked CE weight-gradient differed by about `9.1e-5`; BD3 blocked attention differed from dense-mask attention by about `7.4e-4`; BD3 blocked model logits differed by about `3.0e-3`.
-- The next useful experiment is probably the full split-router old-bundle run at `lr_mult=2.0`. If tuning after that, inspect whether the step-time overhead comes from token dispatch/scatter, expert matmuls, or pmap communication, then try capacity factor/router regularization/gate normalization only if the loss curve or expert/drop metrics justify it.
+- The best completed AR MoE recipe remains `ar_moe_old_bundle_nonsplit_lr2p0_zloss0p01_ckpt1k`.
+- For VE, do not launch a full 5.1K run until a 1K probe at least beats plain MoE at the matched step.
