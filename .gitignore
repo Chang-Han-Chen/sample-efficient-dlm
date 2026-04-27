@@ -29,7 +29,9 @@ node_modules/
 *.egg-info*
 **/data_tokenized
 wandb/
+# Training checkpoints are large local artifacts.
 checkpoints/
+**/checkpoints/
 !experiments/**
 
 .ipynb_checkpoints/
