@@ -364,6 +364,36 @@
   - Mainline recommendation: stop spending mainline time on VE+MoE. The serious AR path is old-bundle MoE without value embeddings, especially `ar_moe_old_bundle_nonsplit_lr2p0_zloss0p01_ckpt1k`.
   - If VE is revisited, treat it as a mechanism/debugging project rather than the next candidate baseline. The most relevant implementation hypothesis is that `value_embedding_gate.weight` is still a matrix parameter trained by Muon; moving that gate to a low-LR Adam group may be worth testing only if we explicitly return to VE.
 
+## MDLM MoE value-embedding no-mask-vector diagnostic
+
+- Launched a short MDLM diagnostic to test whether the AR VE+MoE failure pattern also appears for MDLM no-mask-vector:
+  - Run: `mdlm_moe_ve_nomaskvec_nonsplit_z0p01_lr1p0_vetbl0p005_probe_1k`
+  - W&B run id: `hk606u67`
+  - Local log: `runs/moe_matrix/mdlm_moe_ve_nomaskvec_nonsplit_z0p01_lr1p0_vetbl0p005_probe_1k/train.jsonl`
+  - Base config: `configs/experiments/mdlm_moe_value_embedding_nomaskvec.yaml`
+  - Overrides: `--max-steps 1000`, `--warmup-steps 100`, `--lr-mult 1.0`, `--value-embedding-table-adam-lr 0.005`, `--no-moe-split-router-input`, `--moe-router-z-loss-weight 0.01`, no checkpoints.
+  - Meaning: MDLM objective, MoE + value embeddings, no value residual, no value-embedding gain, no mask-token value vector, non-split router input, stronger router z-loss.
+- Correct dense MDLM no-mask-vector comparator from W&B:
+  - Run: `mdlm_value_embedding_no_vr_nogain_lr0p8_init0p01_nomaskvec_5k1`
+  - W&B run id: `joiid7yg`
+  - State: finished.
+  - Best/last eval `3.1040 @5050`.
+  - Mean/median step time from W&B history: `1.212s` / `1.202s`.
+  - This run was not present in the local `runs/` logs scanned earlier, so the earlier comparison against `mdlm_value_embedding_no_vr_nogain_lr0p8_nomaskvec_5k1` was too weak.
+- In-progress probe status at local step `834`:
+  - Best eval so far `3.7033 @800`; last eval is also `3.7033 @800`.
+  - Recent evals:
+    - step `600`: eval `3.7552`, drop `0.0077`, entropy `1.240`, grad norm `0.282`.
+    - step `650`: eval `3.8277`, drop `0.0560`, entropy `1.234`, grad norm `2.157`.
+    - step `700`: eval `3.8542`, drop `0.0569`, entropy `1.183`, grad norm `0.336`.
+    - step `750`: eval `3.7647`, drop `0.0195`, entropy `1.208`, grad norm `0.301`.
+    - step `800`: eval `3.7033`, drop `0.1044`, entropy `1.210`, grad norm `0.254`.
+  - Step time so far: mean `0.5705s`, median `0.5618s`, tail-100 mean `0.6003s`.
+- Current interpretation:
+  - The MDLM MoE+VE no-mask-vector probe is not immediately failing; it improves through step `800` and is faster per step than the dense W&B comparator on the current hardware/run setup.
+  - It is still far behind the real completed dense no-mask-vector comparator (`3.7033 @800` vs dense `3.1040 @5050`), and router drops are already nontrivial.
+  - Do not conclude MDLM VE+MoE is bad from the weak local no-mask-vector baseline; compare to W&B run `joiid7yg`.
+
 ## Remaining notes
 
 - The focused MoE/config/data-parallel tests pass. A broader stack run seen earlier had three non-MoE numerical strictness failures: chunked CE weight-gradient differed by about `9.1e-5`; BD3 blocked attention differed from dense-mask attention by about `7.4e-4`; BD3 blocked model logits differed by about `3.0e-3`.
