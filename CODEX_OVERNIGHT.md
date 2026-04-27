@@ -380,18 +380,23 @@
   - Best/last eval `3.1040 @5050`.
   - Mean/median step time from W&B history: `1.212s` / `1.202s`.
   - This run was not present in the local `runs/` logs scanned earlier, so the earlier comparison against `mdlm_value_embedding_no_vr_nogain_lr0p8_nomaskvec_5k1` was too weak.
-- In-progress probe status at local step `834`:
-  - Best eval so far `3.7033 @800`; last eval is also `3.7033 @800`.
+- Completed 1K probe result:
+  - JSONL rows `1000`; last train step `999`; last eval step `950`.
+  - Best eval `3.7033 @800`; last eval `3.8901 @950`.
   - Recent evals:
     - step `600`: eval `3.7552`, drop `0.0077`, entropy `1.240`, grad norm `0.282`.
     - step `650`: eval `3.8277`, drop `0.0560`, entropy `1.234`, grad norm `2.157`.
     - step `700`: eval `3.8542`, drop `0.0569`, entropy `1.183`, grad norm `0.336`.
     - step `750`: eval `3.7647`, drop `0.0195`, entropy `1.208`, grad norm `0.301`.
     - step `800`: eval `3.7033`, drop `0.1044`, entropy `1.210`, grad norm `0.254`.
-  - Step time so far: mean `0.5705s`, median `0.5618s`, tail-100 mean `0.6003s`.
+    - step `850`: eval `3.7378`, drop `0.0231`, entropy `1.206`, grad norm `0.284`.
+    - step `900`: eval `3.8478`, drop `0.0282`, entropy `1.202`, grad norm `0.842`.
+    - step `950`: eval `3.8901`, drop `0.0823`, entropy `1.157`, grad norm `0.407`.
+  - Step time: mean `0.5732s`, median `0.5628s`, tail-100 mean `0.5779s`.
 - Current interpretation:
-  - The MDLM MoE+VE no-mask-vector probe is not immediately failing; it improves through step `800` and is faster per step than the dense W&B comparator on the current hardware/run setup.
-  - It is still far behind the real completed dense no-mask-vector comparator (`3.7033 @800` vs dense `3.1040 @5050`), and router drops are already nontrivial.
+  - The MDLM MoE+VE no-mask-vector probe is not immediately catastrophic, but it is not promising: it peaked at step `800`, regressed by step `950`, and had recurring capacity/drop events.
+  - It is far behind the real completed dense no-mask-vector comparator (`3.7033 @800`, `3.8901 @950` vs dense `3.1040 @5050`).
+  - This does not justify a full MDLM MoE+VE no-mask-vector run with this recipe.
   - Do not conclude MDLM VE+MoE is bad from the weak local no-mask-vector baseline; compare to W&B run `joiid7yg`.
 
 ## Remaining notes
