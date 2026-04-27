@@ -505,9 +505,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--wd",
         type=float,
         default=None,
-        help="shorthand weight-decay value; applies to --muon-wd by default",
+        help=(
+            "shorthand weight-decay value; applies to --muon-wd, --adam-wd, "
+            "and --router-adam-wd by default"
+        ),
     )
-    p_run.add_argument("--wd-scope", choices=("muon", "all"), default="muon")
+    p_run.add_argument("--wd-scope", choices=("muon", "all"), default="all")
     p_run.add_argument("--muon-wd", type=float, default=None)
     p_run.add_argument("--adam-wd", type=float, default=None)
     p_run.add_argument("--router-adam-wd", type=float, default=None)
@@ -528,7 +531,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_wd = sub.add_parser("wd-values", help="print the planned WD sweep values")
     p_wd.add_argument("--commands", action="store_true")
     p_wd.add_argument("--model", nargs="+", choices=sorted(MODEL_PRESETS), default=["dense", "moe"])
-    p_wd.add_argument("--wd-scope", choices=("muon", "all"), default="muon")
+    p_wd.add_argument("--wd-scope", choices=("muon", "all"), default="all")
     p_wd.set_defaults(func=print_wd_values)
     return parser
 
