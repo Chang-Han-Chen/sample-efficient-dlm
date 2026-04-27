@@ -8,10 +8,11 @@ was responsible for the MDLM source checkpoints and MDLM-initialized BD3 switch
 runs. The AR-init track was completed on the second VM and is summarized in the
 addendum below; the MDLM-init findings remain as originally recorded.
 
-The MDLM-init full grid is complete. The scratch `b4` BD3LM baseline is still
-running, and scratch `b16` was intentionally skipped after the plan was revised.
-Therefore this is a completed MDLM-init report, but not yet the final
-AR-vs-MDLM-vs-scratch curriculum comparison.
+The MDLM-init full grid is complete. The AR-init results are complete in the
+addendum below. Scratch BD3LM baselines are complete for block lengths `256`,
+`64`, and `4`; scratch `b16` was intentionally skipped after the plan was
+revised. Therefore this file now supports the main same-block comparison for
+`b4`, `b64`, and `b256`, but not a scratch-normalized conclusion for `b16`.
 
 ## Configuration
 
@@ -55,8 +56,9 @@ Prepared token data:
 Current status at last inspection:
 
 - MDLM-init full runs: `20 / 20` complete
-- Scratch BD3LM baseline: `scratch_b4_lr2_full` active, around step `1660 / 10100`
-  with best eval loss `3.055470` at step `1650`
+- Scratch BD3LM baselines complete for block lengths `256`, `64`, and `4`
+- Local scratch `b4` result: `scratch_b4_lr2_full`, best eval loss `2.736409`
+  at step `9600`, last eval loss `2.766726`
 - Scratch `b16`: skipped by request
 - AR-init runs: completed on the second VM; see AR-Init Addendum below
 
@@ -218,23 +220,24 @@ lengths:
 This reinforces the loss result: late small-block switches are not just worse
 on eval loss; they also look less healthy from a routing/drop perspective.
 
-## Recommendation
+## MDLM-Init Recommendation
 
-For the MDLM-init track:
+For the MDLM-init track alone:
 
-1. Treat `mdlm_p030_b4_lr0p666667_full` as the current winner.
-2. Treat `block_len=4` as the leading BD3LM adaptation setting when enough
-   post-switch budget is available.
+1. Treat `mdlm_p030_b4_lr0p666667_full` as the MDLM-init winner.
+2. Treat `block_len=4` as the leading MDLM-to-BD3 adaptation setting when
+   enough post-switch budget is available.
 3. Do not use the latest MDLM checkpoint by default under a fixed total budget;
    later MDLM can adapt faster, but it did not produce the best final loss.
 4. Keep `lr_mult=0.6667` for MDLM-to-BD3 switch runs.
-5. Compare this MDLM-init result against the AR-init VM results and the scratch
-   `b4` baseline before making the final curriculum claim requested in
-   `BD3_CURRICULUM_INSTRUCTIONS.md`.
 
 Current best MDLM-init candidate:
 
 `mdlm_p030_b4_lr0p666667_full`
+
+In the full cross-track comparison, this MDLM-init winner is no longer the
+overall winner. It is beaten by both `ar_p030_b4_lr2_full` and the completed
+`scratch_b4_lr2_full` baseline.
 
 ## AR-Init Addendum
 
@@ -252,7 +255,8 @@ Final AR-init status:
   and `4`
 - Active AR-init BD3 runs: none
 - Pending AR-init BD3 runs: none
-- Scratch BD3LM baselines completed on this VM: block lengths `256` and `64`
+- Scratch BD3LM baselines completed across the two VMs: block lengths `256`,
+  `64`, and `4`
 
 ### AR Source Chain
 
@@ -279,6 +283,7 @@ the most recent 100 training records for each run.
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `scratch_b256_lr2_full` | 256 | 0.00 | 2.940822 | 8650 | 3.006591 | 0.00824 | 1.059 |
 | `scratch_b64_lr2_full` | 64 | 0.00 | 2.946705 | 8950 | 2.974041 | 0.00001 | 1.111 |
+| `scratch_b4_lr2_full` | 4 | 0.00 | 2.736409 | 9600 | 2.766726 | 0.00000 | 1.131 |
 | `ar_p030_b256_lr2_full` | 256 | 0.30 | 2.962922 | 9750 | 2.994042 | 0.00011 | 1.248 |
 | `ar_p030_b64_lr2_full` | 64 | 0.30 | 2.917921 | 9500 | 2.966949 | 0.00000 | 1.246 |
 | `ar_p030_b16_lr2_full` | 16 | 0.30 | 2.876053 | 9500 | 2.924899 | 0.00001 | 1.240 |
@@ -324,14 +329,16 @@ For `block_len=4`, the completed AR-init comparison is:
 
 | Block length | p_ar | Best eval loss | Run |
 | ---: | ---: | ---: | --- |
+| 4 | 0.00 | 2.736409 | `scratch_b4_lr2_full` |
 | 4 | 0.30 | **2.727532** | `ar_p030_b4_lr2_full` |
 | 4 | 0.50 | 2.771696 | `ar_p050_b4_lr2_full` |
 | 4 | 0.80 | 2.851088 | `ar_p080_b4_lr2_full` |
 | 4 | 0.90 | 2.878553 | `ar_p090_b4_lr2_full` |
 | 4 | 0.95 | 2.992373 | `ar_p095_b4_lr2_full` |
 
-At `block_len=4`, earlier AR switching is also better. The best completed
-result is `p_ar=0.30`; validation loss worsens as less BD3 adaptation budget is
+At `block_len=4`, the best completed result is `p_ar=0.30`, but scratch is
+close: AR init improves over scratch by `0.008877` absolute, or about `0.32%`.
+Among AR-init runs, validation loss worsens as less BD3 adaptation budget is
 left after the AR phase.
 
 ### AR-Init: Fixed p_ar
@@ -376,13 +383,14 @@ hurt by the very small BD3 adaptation budget:
 | 0.95 | 256 | 3.438521 | `ar_p095_b256_lr2_full` |
 | 0.95 | 4 | **2.992373** | `ar_p095_b4_lr2_full` |
 
-For scratch BD3LM, treated as `p_ar=0`, only block lengths `256` and `64` are
-complete on this VM:
+For scratch BD3LM, treated as `p_ar=0`, block lengths `256`, `64`, and `4` are
+complete:
 
 | p_ar | Block length | Best eval loss | Run |
 | ---: | ---: | ---: | --- |
-| 0.00 | 256 | **2.940822** | `scratch_b256_lr2_full` |
+| 0.00 | 256 | 2.940822 | `scratch_b256_lr2_full` |
 | 0.00 | 64 | 2.946705 | `scratch_b64_lr2_full` |
+| 0.00 | 4 | **2.736409** | `scratch_b4_lr2_full` |
 
 ### AR-Init Main Findings
 
@@ -391,11 +399,15 @@ The best completed AR-init curriculum so far is:
 `AR to p=0.30 -> BD3LM block_len=4, lr_mult=2.0`
 
 This run is also the best BD3 curriculum result observed across the completed
-AR-init and MDLM-init runs currently recorded in this file:
+AR-init, MDLM-init, and scratch runs currently recorded in this file:
 
 - Best AR-init BD3 loss: `2.727532` from `ar_p030_b4_lr2_full`
 - Best MDLM-init BD3 loss: `2.821899` from `mdlm_p030_b4_lr0p666667_full`
-- Best scratch BD3 loss available here: `2.940822` from `scratch_b256_lr2_full`
+- Best scratch BD3 loss: `2.736409` from `scratch_b4_lr2_full`
+
+The AR-init winner is only narrowly ahead of same-block scratch `b4`: `0.008877`
+absolute, or about `0.32%`. It is more clearly ahead of the best MDLM-init run:
+`0.094367` absolute, or about `3.34%` relative to the MDLM-init loss.
 
 At fixed `p_ar`, smaller BD3 block lengths are better. The `p_ar=0.30` sweep is
 the cleanest evidence: `b256 -> b64 -> b16 -> b4` improves from `2.962922` to
@@ -406,11 +418,33 @@ At fixed block length, increasing `p_ar` does not help so far. For
 `block_len=256`, scratch is best and later AR switches get progressively worse:
 `2.940822` at `p_ar=0`, `2.962922` at `p_ar=0.30`, `3.012413` at `p_ar=0.50`,
 `3.151225` at `p_ar=0.80`, `3.246917` at `p_ar=0.90`, and `3.438521` at
-`p_ar=0.95`. For `block_len=4`, the same trend holds: `2.727532` at
-`p_ar=0.30`, `2.771696` at `p_ar=0.50`, `2.851088` at `p_ar=0.80`,
-`2.878553` at `p_ar=0.90`, and `2.992373` at `p_ar=0.95`.
+`p_ar=0.95`. For `block_len=4`, scratch is `2.736409`; early AR init at
+`p_ar=0.30` is slightly better at `2.727532`, while later AR switches get
+worse: `2.771696` at `p_ar=0.50`, `2.851088` at `p_ar=0.80`, `2.878553` at
+`p_ar=0.90`, and `2.992373` at `p_ar=0.95`.
 
-The current interpretation is that AR features transfer well to BD3 only when
-the post-switch objective is sufficiently AR-like, meaning small BD3 block
-lengths. Large-block BD3 does not benefit from AR initialization under this
-budget, and late AR switching leaves too little BD3 adaptation time.
+### Cross-Track Same-Block Summary
+
+Per `BD3_CURRICULUM_INSTRUCTIONS.md`, the most important comparison is at fixed
+BD3 block length. Different block lengths should not be treated as exactly the
+same model family.
+
+| Block length | Best scratch | Best AR-init | Best MDLM-init | Current same-block winner |
+| ---: | ---: | ---: | ---: | --- |
+| 256 | 2.940822 | 2.962922 (`p_ar=0.30`) | **2.935842** (`p_mdlm=0.80`) | MDLM-init, tiny margin over scratch |
+| 64 | 2.946705 | **2.917921** (`p_ar=0.30`) | 2.943600 (`p_mdlm=0.30`) | AR-init |
+| 16 | not run | **2.876053** (`p_ar=0.30`) | 2.949728 (`p_mdlm=0.30`) | AR-init among initialized runs; no scratch baseline |
+| 4 | 2.736409 | **2.727532** (`p_ar=0.30`) | 2.821899 (`p_mdlm=0.30`) | AR-init, narrow margin over scratch |
+
+Across completed runs, the best observed loss is still `ar_p030_b4_lr2_full`
+at `2.727532`. However, the completed scratch `b4` baseline is very strong at
+`2.736409`, only `0.008877` worse. This changes the interpretation: much of
+the gain appears to come from small-block BD3LM itself, while AR initialization
+adds a small but real gain at `b4` and a clearer gain at `b64`.
+
+The current interpretation is that AR features transfer best to BD3 when the
+post-switch objective is sufficiently AR-like, meaning small BD3 block lengths.
+Large-block BD3 does not benefit from AR initialization under this budget, and
+late AR switching leaves too little BD3 adaptation time. MDLM initialization is
+not competitive at `b4`, but is the best same-block result for `b256` by a
+small margin.
