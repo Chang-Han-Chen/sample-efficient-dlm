@@ -9,7 +9,6 @@ __pycache__
 *.out
 aws/
 **/*.json
-!status.json
 **/*.npy
 **/*.txt
 !/requirements.txt
