@@ -5,7 +5,8 @@ Date: 2026-04-27
 This note summarizes the **MDLM-init** side of the BD3 curriculum sweep on the
 `climbmix_24x_newtok_8192` data. Per `BD3_CURRICULUM_INSTRUCTIONS.md`, this VM
 was responsible for the MDLM source checkpoints and MDLM-initialized BD3 switch
-runs. The AR-init track is running on another VM and is not included here.
+runs. The AR-init track was completed on the second VM and is summarized in the
+addendum below; the MDLM-init findings remain as originally recorded.
 
 The MDLM-init full grid is complete. The scratch `b4` BD3LM baseline is still
 running, and scratch `b16` was intentionally skipped after the plan was revised.
@@ -57,7 +58,7 @@ Current status at last inspection:
 - Scratch BD3LM baseline: `scratch_b4_lr2_full` active, around step `1660 / 10100`
   with best eval loss `3.055470` at step `1650`
 - Scratch `b16`: skipped by request
-- AR-init runs: handled separately on another VM
+- AR-init runs: completed on the second VM; see AR-Init Addendum below
 
 ## MDLM-Init Full Sweep
 
@@ -244,14 +245,13 @@ attention, cuDNN attention implementation, validation residual, disabled split
 router input, and MoE z-loss settings described above. The AR-to-BD3 switch
 runs use `lr_mult=2.0`.
 
-Current AR-init status at last inspection:
+Final AR-init status:
 
-- Completed AR-init BD3 runs: `p_ar=0.30` for block lengths `256`, `64`, `16`,
-  and `4`; `p_ar=0.50` for block lengths `256` and `4`; `p_ar=0.80` for block
-  length `256`
-- Active AR-init BD3 run: `ar_p080_b4_lr2_full`
-- Pending AR-init BD3 runs: `p_ar=0.90` and `p_ar=0.95` for block lengths `256`
+- AR-init BD3 runs complete: `p_ar=0.30` for block lengths `256`, `64`, `16`,
+  and `4`; `p_ar=0.50`, `0.80`, `0.90`, and `0.95` for block lengths `256`
   and `4`
+- Active AR-init BD3 runs: none
+- Pending AR-init BD3 runs: none
 - Scratch BD3LM baselines completed on this VM: block lengths `256` and `64`
 
 ### AR Source Chain
@@ -270,23 +270,27 @@ validation loss. However, the AR-to-BD3 switch results so far do not support
 "train AR as long as possible before switching" under the fixed 10.1k-step
 budget.
 
-### AR-Init Completed And Active Runs
+### AR-Init Completed Runs
 
-Runs are sorted by curriculum family and block length. The active `p_ar=0.80,
-block_len=4` row is provisional and should not be used as a final comparison.
+Runs are sorted by curriculum family and block length. MoE diagnostics are from
+the most recent 100 training records for each run.
 
-| Run | Block | p_ar | Status | Best eval loss | Best step | Last eval loss |
-| --- | ---: | ---: | --- | ---: | ---: | ---: |
-| `scratch_b256_lr2_full` | 256 | 0.00 | complete | 2.940822 | 8650 | 3.006591 |
-| `scratch_b64_lr2_full` | 64 | 0.00 | complete | 2.946705 | 8950 | 2.974041 |
-| `ar_p030_b256_lr2_full` | 256 | 0.30 | complete | 2.962922 | 9750 | 2.994042 |
-| `ar_p030_b64_lr2_full` | 64 | 0.30 | complete | 2.917921 | 9500 | 2.966949 |
-| `ar_p030_b16_lr2_full` | 16 | 0.30 | complete | 2.876053 | 9500 | 2.924899 |
-| `ar_p030_b4_lr2_full` | 4 | 0.30 | complete | **2.727532** | 9750 | 2.780340 |
-| `ar_p050_b256_lr2_full` | 256 | 0.50 | complete | 3.012413 | 9600 | 3.031457 |
-| `ar_p050_b4_lr2_full` | 4 | 0.50 | complete | 2.771696 | 9200 | 2.787228 |
-| `ar_p080_b256_lr2_full` | 256 | 0.80 | complete | 3.151225 | 9700 | 3.162386 |
-| `ar_p080_b4_lr2_full` | 4 | 0.80 | running | 3.676480 | 8150 | 3.676480 |
+| Run | Block | p_ar | Best eval loss | Best step | Last eval loss | Recent MoE drop | Router entropy |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `scratch_b256_lr2_full` | 256 | 0.00 | 2.940822 | 8650 | 3.006591 | 0.00824 | 1.059 |
+| `scratch_b64_lr2_full` | 64 | 0.00 | 2.946705 | 8950 | 2.974041 | 0.00001 | 1.111 |
+| `ar_p030_b256_lr2_full` | 256 | 0.30 | 2.962922 | 9750 | 2.994042 | 0.00011 | 1.248 |
+| `ar_p030_b64_lr2_full` | 64 | 0.30 | 2.917921 | 9500 | 2.966949 | 0.00000 | 1.246 |
+| `ar_p030_b16_lr2_full` | 16 | 0.30 | 2.876053 | 9500 | 2.924899 | 0.00001 | 1.240 |
+| `ar_p030_b4_lr2_full` | 4 | 0.30 | **2.727532** | 9750 | 2.780340 | 0.00000 | 1.226 |
+| `ar_p050_b256_lr2_full` | 256 | 0.50 | 3.012413 | 9600 | 3.031457 | 0.00000 | 1.237 |
+| `ar_p050_b4_lr2_full` | 4 | 0.50 | 2.771696 | 9200 | 2.787228 | 0.00000 | 1.183 |
+| `ar_p080_b256_lr2_full` | 256 | 0.80 | 3.151225 | 9700 | 3.162386 | 0.00549 | 1.195 |
+| `ar_p080_b4_lr2_full` | 4 | 0.80 | 2.851088 | 10050 | 2.851088 | 0.00389 | 1.125 |
+| `ar_p090_b256_lr2_full` | 256 | 0.90 | 3.246917 | 10000 | 3.273147 | 0.00010 | 1.191 |
+| `ar_p090_b4_lr2_full` | 4 | 0.90 | 2.878553 | 10000 | 2.908326 | 0.00047 | 1.140 |
+| `ar_p095_b256_lr2_full` | 256 | 0.95 | 3.438521 | 10050 | 3.438521 | 0.00022 | 1.165 |
+| `ar_p095_b4_lr2_full` | 4 | 0.95 | 2.992373 | 10050 | 2.992373 | 0.00047 | 1.110 |
 
 ### AR-Init: Fixed Block Length
 
@@ -299,6 +303,8 @@ for `block_len=256`:
 | 256 | 0.30 | 2.962922 | `ar_p030_b256_lr2_full` |
 | 256 | 0.50 | 3.012413 | `ar_p050_b256_lr2_full` |
 | 256 | 0.80 | 3.151225 | `ar_p080_b256_lr2_full` |
+| 256 | 0.90 | 3.246917 | `ar_p090_b256_lr2_full` |
+| 256 | 0.95 | 3.438521 | `ar_p095_b256_lr2_full` |
 
 For `block_len=256`, AR init is not helping. The scratch run is the best
 completed result, and increasing `p_ar` monotonically worsens best validation
@@ -320,11 +326,13 @@ For `block_len=4`, the completed AR-init comparison is:
 | ---: | ---: | ---: | --- |
 | 4 | 0.30 | **2.727532** | `ar_p030_b4_lr2_full` |
 | 4 | 0.50 | 2.771696 | `ar_p050_b4_lr2_full` |
-| 4 | 0.80 | 3.676480 | `ar_p080_b4_lr2_full` running |
+| 4 | 0.80 | 2.851088 | `ar_p080_b4_lr2_full` |
+| 4 | 0.90 | 2.878553 | `ar_p090_b4_lr2_full` |
+| 4 | 0.95 | 2.992373 | `ar_p095_b4_lr2_full` |
 
-The active `p_ar=0.80` run is still too early for a final claim, but the
-completed `p_ar=0.30` and `p_ar=0.50` runs already show that earlier switching
-is better at `block_len=4`.
+At `block_len=4`, earlier AR switching is also better. The best completed
+result is `p_ar=0.30`; validation loss worsens as less BD3 adaptation budget is
+left after the AR phase.
 
 ### AR-Init: Fixed p_ar
 
@@ -345,13 +353,28 @@ At fixed `p_ar=0.50`, the same small-block preference is visible:
 | 0.50 | 256 | 3.012413 | `ar_p050_b256_lr2_full` |
 | 0.50 | 4 | **2.771696** | `ar_p050_b4_lr2_full` |
 
-At `p_ar=0.80`, `block_len=4` is still running, so the fixed-`p_ar` comparison
-is not complete:
+At fixed `p_ar=0.80`, `block_len=4` is better than `block_len=256` despite the
+late switch:
 
 | p_ar | Block length | Best eval loss | Run |
 | ---: | ---: | ---: | --- |
 | 0.80 | 256 | 3.151225 | `ar_p080_b256_lr2_full` |
-| 0.80 | 4 | 3.676480 | `ar_p080_b4_lr2_full` running |
+| 0.80 | 4 | **2.851088** | `ar_p080_b4_lr2_full` |
+
+At fixed `p_ar=0.90`, `block_len=4` is again better:
+
+| p_ar | Block length | Best eval loss | Run |
+| ---: | ---: | ---: | --- |
+| 0.90 | 256 | 3.246917 | `ar_p090_b256_lr2_full` |
+| 0.90 | 4 | **2.878553** | `ar_p090_b4_lr2_full` |
+
+At fixed `p_ar=0.95`, `block_len=4` remains better, although both runs are
+hurt by the very small BD3 adaptation budget:
+
+| p_ar | Block length | Best eval loss | Run |
+| ---: | ---: | ---: | --- |
+| 0.95 | 256 | 3.438521 | `ar_p095_b256_lr2_full` |
+| 0.95 | 4 | **2.992373** | `ar_p095_b4_lr2_full` |
 
 For scratch BD3LM, treated as `p_ar=0`, only block lengths `256` and `64` are
 complete on this VM:
@@ -376,13 +399,16 @@ AR-init and MDLM-init runs currently recorded in this file:
 
 At fixed `p_ar`, smaller BD3 block lengths are better. The `p_ar=0.30` sweep is
 the cleanest evidence: `b256 -> b64 -> b16 -> b4` improves from `2.962922` to
-`2.727532`.
+`2.727532`. For the late switch points where only `b256` and `b4` were run,
+`b4` also wins decisively at `p_ar=0.50`, `0.80`, `0.90`, and `0.95`.
 
 At fixed block length, increasing `p_ar` does not help so far. For
 `block_len=256`, scratch is best and later AR switches get progressively worse:
 `2.940822` at `p_ar=0`, `2.962922` at `p_ar=0.30`, `3.012413` at `p_ar=0.50`,
-and `3.151225` at `p_ar=0.80`. For `block_len=4`, the completed runs also favor
-the earlier switch: `2.727532` at `p_ar=0.30` versus `2.771696` at `p_ar=0.50`.
+`3.151225` at `p_ar=0.80`, `3.246917` at `p_ar=0.90`, and `3.438521` at
+`p_ar=0.95`. For `block_len=4`, the same trend holds: `2.727532` at
+`p_ar=0.30`, `2.771696` at `p_ar=0.50`, `2.851088` at `p_ar=0.80`,
+`2.878553` at `p_ar=0.90`, and `2.992373` at `p_ar=0.95`.
 
 The current interpretation is that AR features transfer well to BD3 only when
 the post-switch objective is sufficiently AR-like, meaning small BD3 block
