@@ -133,6 +133,25 @@ cost.
     `https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/6sh2lavi`
   - Best and final checkpoints were uploaded to W&B as run artifacts.
 
+- MDLM MoE old-bundle AR-style full run:
+  - Local JSONL:
+    `runs/moe_matrix/mdlm_moe_old_bundle_arstyle_lr2p0_rz0p01_24x_4a100/train.jsonl`
+  - Local output dir:
+    `runs/moe_matrix/mdlm_moe_old_bundle_arstyle_lr2p0_rz0p01_24x_4a100`
+  - Local resolved config:
+    `runs/moe_matrix/mdlm_moe_old_bundle_arstyle_lr2p0_rz0p01_24x_4a100/resolved_config.json`
+  - Local interval checkpoints:
+    `runs/moe_matrix/mdlm_moe_old_bundle_arstyle_lr2p0_rz0p01_24x_4a100/checkpoints/step_00001000`
+    through
+    `runs/moe_matrix/mdlm_moe_old_bundle_arstyle_lr2p0_rz0p01_24x_4a100/checkpoints/step_00005000`
+  - Local final checkpoint:
+    `runs/moe_matrix/mdlm_moe_old_bundle_arstyle_lr2p0_rz0p01_24x_4a100/checkpoints/final`
+  - W&B run id: `3dqh35vp`
+  - W&B local dir: `wandb/run-20260427_002624-3dqh35vp`
+  - W&B run URL:
+    `https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/3dqh35vp`
+  - W&B checkpoint artifact upload was disabled for this run.
+
 ## MDLM MoE Baseline Full Run
 
 Command-equivalent config:
@@ -256,3 +275,170 @@ Working conclusion:
 - No urgent LR or router-z tuning is indicated from this run. If future runs show
   sustained drop or entropy collapse, the first targeted knobs should be router
   LR and router z-loss, but this completed baseline does not require intervention.
+
+## MDLM MoE Old-Bundle AR-Style Run
+
+Purpose:
+
+- Test the AR old-bundle MoE recipe under `objective=mdlm`.
+- Use the AR-favored `lr_mult=2.0`.
+- Increase router z-loss weight by 10x versus the prior MDLM MoE baseline:
+  `0.001 -> 0.01`.
+- Keep the AR old-bundle architectural flags, including value residual on.
+
+Command-equivalent config:
+
+```bash
+python train_ar.py \
+  --config configs/experiments/mdlm_moe_old_bundle.yaml \
+  --num-devices 4 \
+  --attn-val-residual \
+  --no-moe-split-router-input \
+  --lr-mult 2.0 \
+  --moe-router-z-loss-weight 0.01 \
+  --checkpoint-interval 1000 \
+  --no-save-best-checkpoint \
+  --no-wandb-checkpoints \
+  --run-name mdlm_moe_old_bundle_arstyle_lr2p0_rz0p01_24x_4a100 \
+  --output-dir runs/moe_matrix/mdlm_moe_old_bundle_arstyle_lr2p0_rz0p01_24x_4a100 \
+  --log-jsonl runs/moe_matrix/mdlm_moe_old_bundle_arstyle_lr2p0_rz0p01_24x_4a100/train.jsonl \
+  --measure-start-step 105
+```
+
+Effective setup:
+
+- Objective: `mdlm`
+- Config base: `configs/experiments/mdlm_moe_old_bundle.yaml`
+- Hardware: `4x A100-SXM4-80GB`
+- Global batch: `512`
+- Per-GPU batch: `128`
+- Grad accumulation: `1`
+- Context length: `512`
+- Tokens per optimizer step: `262144`
+- Steps: `5100` rows, train steps `0` through `5099`
+- Data:
+  - Train: `data/climbmix_24x_newtok_8192/tokens/train`
+  - Eval: `data/climbmix_24x_newtok_8192/tokens/val`
+- Eval: every `50` steps, `eval_batches=4`, `eval_t_frac=0.6`
+- Diffusion: `diffusion_steps=100`, `t_min=0.45`, `t_max=0.95`,
+  linear schedule, expected mask rate `0.7`
+- Vocab: base `8192`, model `8193`, mask token id `8192`
+- Backbone: `d_model=768`, `d_ff=2048`, `n_layers=8`, `n_heads=12`,
+  `bfloat16`, `cudnn` attention, weight tying on
+- AR-style old-bundle flags:
+  - `attn_qknorm=true`
+  - `attn_val_residual=true`
+  - `attn_gating=per-head`
+  - `layernorm_scaling=true`
+  - `value_embedding=false`
+- MoE:
+  - token-choice switch, top-1, alternating layers, `4` experts
+  - capacity factor `1.25`
+  - router-prob scaling on
+  - split-router input off
+  - token dropping on
+  - fp32 router
+- MoE losses:
+  - load balance weight `0.01`
+  - router z-loss weight `0.01`
+- Optimizer:
+  - `lr_mult=2.0`
+  - table LR `0.020`
+  - scalar LR `0.010`
+  - router LR `0.002`
+  - Muon LR `0.080`
+  - Muon WD `1e-4`
+- Checkpointing:
+  - checkpoint interval `1000`
+  - no best checkpoint
+  - final checkpoint enabled
+  - W&B checkpoint artifacts disabled
+
+Final outcome:
+
+- Best eval: step `5050`, `eval_loss=3.077142`, `eval_z_loss=34.5636`
+- Last eval: step `5050`, same as best
+- Final train row: step `5099`, loss `3.6288`, total loss `3.6422`
+- Local final checkpoint:
+  `runs/moe_matrix/mdlm_moe_old_bundle_arstyle_lr2p0_rz0p01_24x_4a100/checkpoints/final`
+- Local periodic checkpoints:
+  - `step_00001000`
+  - `step_00002000`
+  - `step_00003000`
+  - `step_00004000`
+  - `step_00005000`
+- Timing/memory summary:
+  - `compile_plus_first_step=40.492s`
+  - `avg_measured_step=0.7310s` from step `105`
+  - `tokens_per_sec=358,589`
+  - `est_tflops=172.8`
+  - `mfu=55.4%`
+  - `jax_peak_hbm_gb=27.48`
+
+MoE health at best/final eval step `5050`:
+
+- `moe_aux_loss=0.01012`
+- `moe_drop=0.0000`
+- `moe_router_entropy=1.20509`
+- `moe_load_balance_loss=1.00260`
+- `moe_router_z_loss=0.00934`
+- Expert assignment min/max: `0.2249` / `0.2772`
+- Router probability min/max: `0.2160` / `0.2754`
+
+Tail MoE health from steps `4500-5099`:
+
+- Router entropy mean/min: `1.2000` / `1.1865`
+- Drop mean/p95/max: `0.000043` / `0.000202` / `0.002859`
+- Load-balance mean: `1.0022`
+- Router z-loss mean: `0.01055`
+- Grad max: `0.2666`
+- Step-time mean: `0.7336s`
+
+Notable training dynamics:
+
+- Initial routing turbulence was present but cleared quickly:
+  - step `0`: drop `52.0%`
+  - step `50`: drop `22.1%`
+  - step `100`: drop `0.31%`
+  - step `150`: drop `0.0%`
+- There were isolated train-row gradient spikes and routing shocks earlier in
+  training. The most notable region was around steps `4095-4160`, including
+  transient drop spikes and one very large train-row grad spike at step `4311`.
+  These did not persist. Eval recovered and the tail window was very clean.
+- The 10x router z-loss kept router logits small: tail router z-loss mean was
+  about `0.0106`. With weight `0.01`, the contribution is still only about
+  `0.00011`.
+
+Comparison to the MDLM MoE baseline:
+
+| metric | MDLM MoE baseline | MDLM MoE old-bundle AR-style | delta |
+|---|---:|---:|---:|
+| best/final eval | `3.1525` | `3.0771` | `-0.0754` |
+| avg measured step | `0.7826s` | `0.7310s` | `0.0516s` faster |
+| tokens/sec | `334,957` | `358,589` | `+23,632` |
+| peak HBM | `22.49 GB` | `27.48 GB` | `+4.99 GB` |
+| tail drop mean | `1.58%` | `0.0043%` | much cleaner |
+| tail router entropy mean | `1.0793` | `1.2000` | higher entropy |
+
+Matched-step eval comparison against the completed MDLM MoE baseline:
+
+| step | MDLM MoE baseline | old-bundle AR-style | delta |
+|---:|---:|---:|---:|
+| 1000 | `3.5358` | `3.4256` | `-0.1102` |
+| 2000 | `3.3394` | `3.2776` | `-0.0618` |
+| 2500 | `3.3001` | `3.2356` | `-0.0645` |
+| 3000 | `3.2828` | `3.2147` | `-0.0681` |
+| 3250 | `3.2135` | `3.1471` | `-0.0664` |
+| 5050 | `3.1525` | `3.0771` | `-0.0754` |
+
+Working conclusion:
+
+- This is the best MDLM MoE run so far in this thread.
+- The AR-style old-bundle architecture plus `lr_mult=2.0` and router z-loss
+  `0.01` improves eval over the plain MDLM MoE baseline while also improving
+  average wall time.
+- The higher router z-loss appears beneficial for routing health here: entropy
+  stayed higher, drop was near zero in the tail, and load balance stayed close
+  to ideal. It is not yet isolated from the architecture and LR changes, so the
+  next careful ablation would be router z-loss or LR at fixed old-bundle
+  architecture.
