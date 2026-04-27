@@ -18,6 +18,7 @@ aws/
 **/*.sh
 **/*.ipynb
 # Local datasets stay out of git; data/ scripts remain trackable.
+data/climbmix*/
 data/climbmix/
 data/climbmix_24x_newtok_8192/
 data_tokenized/
