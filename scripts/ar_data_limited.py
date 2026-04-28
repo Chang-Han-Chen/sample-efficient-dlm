@@ -25,6 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DATA_ROOT = REPO_ROOT / "data/climbmix_24x_newtok_8192"
 DEFAULT_DATA_ROOT = REPO_ROOT / "data/climbmix_25m_newtok_8192"
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "runs/data_limited_ar_25m"
+DEFAULT_DATA_LABEL = "25m"
 DEFAULT_TOKENS = 25_000_000
 DEFAULT_BATCH_SIZE = 512
 DEFAULT_CONTEXT_LENGTH = 512
@@ -273,7 +274,7 @@ def build_run_command(args: argparse.Namespace) -> tuple[list[str], Path, dict[s
     if args.run_name:
         run_name = args.run_name
     else:
-        run_name = f"dl25m_ar_{args.model}_{wd_label}_s{args.max_steps}_seed{args.seed}"
+        run_name = f"dl{args.data_label}_ar_{args.model}_{wd_label}_s{args.max_steps}_seed{args.seed}"
     if "/" in run_name or "\\" in run_name:
         raise SystemExit("--run-name must not contain path separators")
 
@@ -286,7 +287,7 @@ def build_run_command(args: argparse.Namespace) -> tuple[list[str], Path, dict[s
 
     tags_raw = [
         "data_limited",
-        "25m",
+        args.data_label,
         "ar",
         args.model,
         *preset["tags"],
@@ -489,6 +490,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_run.add_argument("--model", choices=sorted(MODEL_PRESETS), required=True)
     p_run.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
+    p_run.add_argument("--data-label", default=DEFAULT_DATA_LABEL)
     p_run.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     p_run.add_argument("--run-name", default=None)
     p_run.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS)
