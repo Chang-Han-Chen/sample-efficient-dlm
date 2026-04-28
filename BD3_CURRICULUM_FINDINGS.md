@@ -253,6 +253,9 @@ Final AR-init status:
 - AR-init BD3 runs complete: `p_ar=0.30` for block lengths `256`, `64`, `16`,
   and `4`; `p_ar=0.50`, `0.80`, `0.90`, and `0.95` for block lengths `256`
   and `4`
+- Additional AR-init multi-block probe complete: `p_ar=0.50` with
+  `b4 -> b16 -> b64 -> b256`, manually stopped near the original 10.1k-step
+  budget before the planned LR-decay tail
 - Active AR-init BD3 runs: none
 - Pending AR-init BD3 runs: none
 - Scratch BD3LM baselines completed across the two VMs: block lengths `256`,
@@ -391,6 +394,38 @@ complete:
 | 0.00 | 256 | 2.940822 | `scratch_b256_lr2_full` |
 | 0.00 | 64 | 2.946705 | `scratch_b64_lr2_full` |
 | 0.00 | 4 | **2.736409** | `scratch_b4_lr2_full` |
+
+### AR-Init Multi-Block Probe
+
+After the fixed-block grid, we ran one additional `p_ar=0.50` AR-init probe to
+test whether progressively decreasing AR-likeness after the switch would help:
+
+`source_ar_to05100 -> b4 -> b16 -> b64 -> b256`
+
+The run was launched as `ar_p050_multiblock_b4_b16_b64_b256_lr2_decay`. The
+intended schedule was `b4` from step `5100`, `b16` from `6200`, `b64` from
+`7200`, `b256` from `8200`, and then a 2.5k-step linear LR decay after step
+`10200`. It was manually stopped at step `10126`, before the decay tail, so it
+should be interpreted as a near-10.1k no-decay probe.
+
+| Segment block | Best eval loss in segment | Best step | Last segment eval |
+| ---: | ---: | ---: | ---: |
+| 4 | 2.903755 | 6100 | 2.939331 |
+| 16 | 3.035049 | 7100 | 3.072097 |
+| 64 | 3.075198 | 8150 | 3.075198 |
+| 256 | 3.029152 | 9950 | 3.048385 |
+
+The overall best eval loss, `2.903755`, happened during the `b4` segment, so it
+is not a fair `b256` result. As a `b256` result, the probe is worse than the
+prior fixed-block `p_ar=0.50` run: `3.029152` versus
+`3.012413` from `ar_p050_b256_lr2_full`, a gap of `0.016739`. It is also worse
+than the best AR-init `b256` run (`2.962922` from `p_ar=0.30`), scratch `b256`
+(`2.940822`), and the best same-block MDLM-init `b256` run (`2.935842`).
+
+This is useful negative evidence: under this schedule and budget, stepping
+through smaller blocks before ending at `b256` does not improve the final
+large-block objective. The earlier fixed-block conclusion still holds:
+large-block BD3 does not benefit from AR initialization here.
 
 ### AR-Init Main Findings
 
