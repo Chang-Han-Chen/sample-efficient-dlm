@@ -35,6 +35,49 @@ Queue controls after the first scratch run:
 The first scratch BD3 run used the original 200-step eval cadence and did not
 have route-probe logging, because the probe was added after that run started.
 
+## Curve Recovery
+
+Local `runs/moe_data_limited_curriculum/` outputs are intentionally ignored and
+should not be pushed. To recover loss curves later, use W&B:
+
+- Project: `y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm`
+- Group: `moe_data_limited_curriculum`
+- W&B run name: same as the local run ID in the first column
+- Useful history keys: `step`, `loss`, `eval_loss`, `moe_dropped_fraction`,
+  `moe_router_entropy`, `moe_expert_fraction_std`, and route-probe metrics when
+  present
+
+| W&B run name / local run ID | W&B id |
+| --- | --- |
+| `u25mish_p000_bd3_b4_allwd0` | [`cgzujzzq`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/cgzujzzq) |
+| `u25mish_p030_ar_allwd0` | [`ox94pu29`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/ox94pu29) |
+| `u25mish_p030_bd3_b4_allwd0` | [`edix6e1p`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/edix6e1p) |
+| `u25mish_ar0p5ep_ar_allwd0` | [`q05utpyy`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/q05utpyy) |
+| `u25mish_ar0p5ep_bd3_b4_allwd0` | [`eyyh2dx6`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/eyyh2dx6) |
+| `u25mish_ar1ep_ar_allwd0` | [`h75xg07e`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/h75xg07e) |
+| `u25mish_ar1ep_bd3_b4_allwd0` | [`l46jw78o`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/l46jw78o) |
+| `u25mish_p000_bd3_b4_allwd0p1` | [`m6yvybpg`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/m6yvybpg) |
+| `u25mish_ar1000_muw0p1_adamwd0p01_ar` | [`bhdily2x`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/bhdily2x) |
+| `u25mish_ar1000_muw0p1_adamwd0_ar` | [`ad82jsrv`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/ad82jsrv) |
+| `u25mish_ar1000_muw0p1_adamwd0p01_routerwd0_ar` | [`ij6v7stn`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/ij6v7stn) |
+| `u25mish_ar1000_muw0p1_adamwd0p001_routerwd0_ar` | [`cgiuc8h8`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/cgiuc8h8) |
+| `u25mish_ar1000_muw0p05_adamwd0p001_routerwd0_ar` | [`btsib84z`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/btsib84z) |
+| `u25mish_p030_ar_muw0p1_adamwd0p01_routerwd0` | [`9ajohd3l`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/9ajohd3l) |
+| `u25mish_p030_bd3_b4_from_ar_muw0p1_adamwd0p01_routerwd0_bd3wd0` | [`jdeix8ec`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/jdeix8ec) |
+| `u25mish_p030_ar_muw0p1_adamwd0p01_routerwd0_seed43` | [`ll97lpn7`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/ll97lpn7) |
+| `u25mish_p030_ar_muw0p1_adamwd0p001_routerwd0` | [`ll0n57sx`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/ll0n57sx) |
+| `u25mish_p030_bd3_b4_from_ar_muw0p1_adamwd0p001_routerwd0_bd3wd0` | [`cp6i45e6`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/cp6i45e6) |
+| `u25mish_ar1000_lr2_muw0_adamwd0_routerwd0_ar` | [`50j9od7k`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/50j9od7k) |
+| `u25mish_ar1000_lr2_muw0p1_adamwd0p001_routerwd0_ar` | [`5rpi8ko7`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/5rpi8ko7) |
+| `u25mish_ar1000_lr2_muw0p05_adamwd0p001_routerwd0_ar` | [`dh7f1cg0`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/dh7f1cg0) |
+| `u25mish_ar1000_lr3_muw0p1_adamwd0p001_routerwd0_ar` | no synced W&B URL recorded in launcher log |
+| `u50mish_p000_bd3_b4_allwd0` | [`rnxjykt5`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/rnxjykt5) |
+| `u50mish_p030_ar_allwd0` | [`605i3ldz`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/605i3ldz) |
+| `u50mish_p030_bd3_b4_allwd0` | [`xfdmtqpt`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/xfdmtqpt) |
+| `u50mish_p030_ar_muw0p1_adamwd0p001_routerwd0` | [`jwal4t2x`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/jwal4t2x) |
+| `u50mish_p030_bd3_b4_from_ar_muw0p1_adamwd0p001_routerwd0_bd3wd0` | [`kwn1rbxm`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/kwn1rbxm) |
+| `u50mish_p030_ar_muw0p05_adamwd0p0003_routerwd0` | [`t1f9tj44`](https://wandb.ai/y38283929-uc-berkeley-electrical-engineering-computer-sc/sample-efficient-dlm/runs/t1f9tj44) |
+
 ## Current Results
 
 | Run | Status | Method | WD | Best eval | Best step | Best epoch | Final/latest eval | Notes |
