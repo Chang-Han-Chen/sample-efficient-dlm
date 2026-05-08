@@ -9,6 +9,7 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -178,6 +179,10 @@ def parse_args():
     p.add_argument("--max-grad-norm", type=float, default=1.0)
     p.add_argument("--log-every", type=int, default=1)
     p.add_argument("--eval-batches", type=int, default=0)
+    p.add_argument("--route-probe-samples", type=int, default=0)
+    p.add_argument("--route-probe-source", choices=("eval", "train"), default="eval")
+    p.add_argument("--route-probe-dir", type=Path, default=None)
+    p.add_argument("--route-probe-seed", type=int, default=None)
     p.add_argument("--overfit-batch", action="store_true")
     p.add_argument("--log-jsonl", type=Path, default=None)
     p.add_argument("--measure-start-step", type=int, default=2)
@@ -210,6 +215,7 @@ def parse_args():
             "log_jsonl",
             "output_dir",
             "restore_checkpoint",
+            "route_probe_dir",
             "wandb_artifact_dir",
         }
         defaults = {
@@ -228,6 +234,264 @@ def synthetic_batch(rng: np.random.Generator, batch_size: int, context_length: i
 def to_device_batch(batch: tuple[np.ndarray, np.ndarray]) -> tuple[jax.Array, jax.Array]:
     inputs_np, targets_np = batch
     return jnp.asarray(inputs_np, dtype=jnp.int32), jnp.asarray(targets_np, dtype=jnp.int32)
+
+
+@functools.partial(nnx.jit, static_argnums=(4, 5))
+def route_probe_step(
+    model,
+    token_ids: jax.Array,
+    token_positions: jax.Array | None,
+    attention_mask: jax.Array | None,
+    is_causal: bool | None,
+    bd3_block_len: int | None,
+):
+    """Return per-MoE-layer router choices for a fixed probe batch."""
+    x = model.embedding(token_ids)
+    v1 = None
+    expert_ids = []
+    valid_masks = []
+    selected_probs = []
+    margins = []
+
+    for block in model.blocks:
+        attn_out, v = block.attn(
+            block.ln1(x),
+            token_positions,
+            v1,
+            token_ids=token_ids,
+            attention_mask=attention_mask,
+            is_causal=is_causal,
+            bd3_block_len=bd3_block_len,
+        )
+        x = x + attn_out
+        h = block.ln2(x)
+        if block.is_moe:
+            router_logits = block.ffn.router(h.astype(jnp.float32)).astype(jnp.float32)
+            router_probs = jax.nn.softmax(router_logits, axis=-1)
+            expert_id = jnp.argmax(router_probs, axis=-1).astype(jnp.int32)
+            top2 = jnp.sort(router_probs, axis=-1)[..., -2:]
+            selected_prob = top2[..., -1]
+            margin = top2[..., -1] - top2[..., -2]
+
+            flat_expert_id = expert_id.reshape((-1,))
+            n_tokens = flat_expert_id.shape[0]
+            n_experts = int(block.ffn.num_experts)
+            capacity = max(1, int(np.ceil(float(block.ffn.capacity_factor) * n_tokens / n_experts)))
+            expert_one_hot = jax.nn.one_hot(flat_expert_id, n_experts, dtype=jnp.int32)
+            positions_all = jnp.cumsum(expert_one_hot, axis=0) - 1
+            slot = jnp.sum(positions_all * expert_one_hot, axis=-1)
+            valid = (slot < capacity).reshape(expert_id.shape)
+
+            expert_ids.append(expert_id)
+            valid_masks.append(valid)
+            selected_probs.append(selected_prob)
+            margins.append(margin)
+
+            if block.moe_split_router_input:
+                expert_h = h * jnp.asarray(block.moe_expert_input_scale, dtype=h.dtype)
+                ffn_out, _ = block.ffn(expert_h, router_x=h)
+            else:
+                ffn_out, _ = block.ffn(h)
+        else:
+            ffn_out = block.ffn(h)
+        x = x + ffn_out
+        if v1 is None:
+            v1 = v
+
+    if not expert_ids:
+        shape = (0, token_ids.shape[0], token_ids.shape[1])
+        return (
+            jnp.zeros(shape, dtype=jnp.int32),
+            jnp.zeros(shape, dtype=bool),
+            jnp.zeros(shape, dtype=jnp.float32),
+            jnp.zeros(shape, dtype=jnp.float32),
+        )
+    return (
+        jnp.stack(expert_ids, axis=0),
+        jnp.stack(valid_masks, axis=0),
+        jnp.stack(selected_probs, axis=0),
+        jnp.stack(margins, axis=0),
+    )
+
+
+def make_route_probe_state(
+    *,
+    args,
+    dataset: MemoryMappedTokenDataset | None,
+    eval_dataset: MemoryMappedTokenDataset | None,
+    diffusion_cfg: DiffusionConfig | None,
+    eval_fixed_t_step: int | None,
+    model_context,
+    moe_layer_indices: list[int],
+) -> dict | None:
+    if args.route_probe_samples <= 0:
+        return None
+    if not args.moe:
+        print("route_probe: disabled because --moe is false", flush=True)
+        return None
+
+    source_name = args.route_probe_source
+    source_dataset = eval_dataset if source_name == "eval" else dataset
+    if source_dataset is None and source_name == "eval":
+        source_name = "train"
+        source_dataset = dataset
+
+    probe_seed = (
+        int(args.route_probe_seed)
+        if args.route_probe_seed is not None
+        else int(args.seed) + 2_000_003
+    )
+    probe_rng = np.random.default_rng(probe_seed)
+    samples = int(args.route_probe_samples)
+    starts = None
+    if source_dataset is None:
+        x0, _ = synthetic_batch(probe_rng, samples, args.context_length, args.vocab_size)
+        source_path = None
+        source_name = "synthetic"
+    else:
+        starts = probe_rng.integers(
+            0,
+            source_dataset.num_start_positions,
+            size=samples,
+            dtype=np.int64,
+        )
+        x0, _ = source_dataset._gather(starts)
+        source_path = str(source_dataset.path)
+
+    input_tokens = x0
+    if args.objective != "ar":
+        if diffusion_cfg is None:
+            raise ValueError("route probe for diffusion objectives requires diffusion_cfg")
+        corruption_rng = np.random.default_rng(probe_seed + 1)
+        input_tokens, _, _ = prepare_diffusion_training_batch(
+            args.objective,
+            x0,
+            diffusion_cfg,
+            corruption_rng,
+            fixed_t_step=eval_fixed_t_step,
+        )
+
+    probe_dir = args.route_probe_dir
+    if probe_dir is None:
+        if args.output_dir is None:
+            raise ValueError("--route-probe-dir is required when --output-dir is not set")
+        probe_dir = args.output_dir / "route_probe"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+
+    stream_split = (
+        args.context_length
+        if args.objective == "bd3lm" and input_tokens.shape[1] == 2 * args.context_length
+        else None
+    )
+    metadata = {
+        "samples": samples,
+        "source": source_name,
+        "source_path": source_path,
+        "starts": None if starts is None else starts.astype(int).tolist(),
+        "seed": probe_seed,
+        "objective": args.objective,
+        "input_shape": list(input_tokens.shape),
+        "context_length": args.context_length,
+        "fixed_t_step": eval_fixed_t_step,
+        "stream_split": stream_split,
+        "moe_layer_indices": moe_layer_indices,
+    }
+    (probe_dir / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+    print("route_probe:", {k: metadata[k] for k in ("samples", "source", "input_shape", "fixed_t_step", "stream_split")}, flush=True)
+    return {
+        "dir": probe_dir,
+        "inputs": jnp.asarray(input_tokens, dtype=jnp.int32),
+        "token_positions": model_context.token_positions,
+        "attention_mask": model_context.attention_mask,
+        "is_causal": model_context.is_causal,
+        "bd3_block_len": model_context.bd3_block_len,
+        "first_expert_ids": None,
+        "prev_expert_ids": None,
+        "first_valid": None,
+        "prev_valid": None,
+        "stream_split": stream_split,
+    }
+
+
+def _agreement(a: np.ndarray, b: np.ndarray, mask: np.ndarray | None = None) -> float | None:
+    if mask is not None:
+        denom = int(mask.sum())
+        if denom == 0:
+            return None
+        return float(((a == b) & mask).sum() / denom)
+    return float(np.mean(a == b))
+
+
+def update_route_probe(model, row: dict, step: int, state: dict) -> None:
+    expert_ids, valid, selected_prob, margin = route_probe_step(
+        model,
+        state["inputs"],
+        state["token_positions"],
+        state["attention_mask"],
+        state["is_causal"],
+        state["bd3_block_len"],
+    )
+    expert_ids, valid, selected_prob, margin = jax.block_until_ready(
+        (expert_ids, valid, selected_prob, margin)
+    )
+    expert_ids_np = np.asarray(expert_ids, dtype=np.int32)
+    valid_np = np.asarray(valid, dtype=bool)
+    selected_prob_np = np.asarray(selected_prob, dtype=np.float32)
+    margin_np = np.asarray(margin, dtype=np.float32)
+
+    np.savez_compressed(
+        state["dir"] / f"step_{step:08d}.npz",
+        expert_ids=expert_ids_np,
+        valid=valid_np,
+        selected_prob=selected_prob_np,
+        margin=margin_np,
+        step=np.asarray(step, dtype=np.int64),
+    )
+
+    row["route_probe_dropped_fraction"] = float(1.0 - valid_np.mean()) if valid_np.size else 0.0
+    row["route_probe_selected_prob_mean"] = float(selected_prob_np.mean()) if selected_prob_np.size else 0.0
+    row["route_probe_margin_mean"] = float(margin_np.mean()) if margin_np.size else 0.0
+    row["route_probe_num_ids"] = int(expert_ids_np.size)
+    if state["prev_expert_ids"] is not None:
+        prev = state["prev_expert_ids"]
+        prev_valid = state["prev_valid"]
+        kept = valid_np & prev_valid
+        row["route_probe_agree_prev"] = _agreement(expert_ids_np, prev)
+        row["route_probe_agree_prev_kept"] = _agreement(expert_ids_np, prev, kept)
+        row["route_probe_valid_agree_prev"] = float(np.mean(valid_np == prev_valid))
+        for layer_idx in range(expert_ids_np.shape[0]):
+            row[f"route_probe_agree_prev_layer_{layer_idx}"] = _agreement(
+                expert_ids_np[layer_idx],
+                prev[layer_idx],
+            )
+    if state["first_expert_ids"] is not None:
+        first = state["first_expert_ids"]
+        first_valid = state["first_valid"]
+        kept = valid_np & first_valid
+        row["route_probe_agree_first"] = _agreement(expert_ids_np, first)
+        row["route_probe_agree_first_kept"] = _agreement(expert_ids_np, first, kept)
+        row["route_probe_valid_agree_first"] = float(np.mean(valid_np == first_valid))
+        for layer_idx in range(expert_ids_np.shape[0]):
+            row[f"route_probe_agree_first_layer_{layer_idx}"] = _agreement(
+                expert_ids_np[layer_idx],
+                first[layer_idx],
+            )
+
+    split = state.get("stream_split")
+    if split is not None and state["prev_expert_ids"] is not None:
+        prev = state["prev_expert_ids"]
+        row["route_probe_agree_prev_xt"] = _agreement(expert_ids_np[:, :, :split], prev[:, :, :split])
+        row["route_probe_agree_prev_x0"] = _agreement(expert_ids_np[:, :, split:], prev[:, :, split:])
+    if split is not None and state["first_expert_ids"] is not None:
+        first = state["first_expert_ids"]
+        row["route_probe_agree_first_xt"] = _agreement(expert_ids_np[:, :, :split], first[:, :, :split])
+        row["route_probe_agree_first_x0"] = _agreement(expert_ids_np[:, :, split:], first[:, :, split:])
+
+    if state["first_expert_ids"] is None:
+        state["first_expert_ids"] = expert_ids_np
+        state["first_valid"] = valid_np
+    state["prev_expert_ids"] = expert_ids_np
+    state["prev_valid"] = valid_np
 
 
 def shard_batch_for_devices(array: np.ndarray, num_devices: int) -> np.ndarray:
@@ -664,6 +928,9 @@ def main():
         moe_router_dtype=jnp.float32,
         moe_drop_tokens=args.moe_drop_tokens,
     )
+    moe_layer_indices = [
+        idx for idx, block in enumerate(model.blocks) if getattr(block, "is_moe", False)
+    ]
     table_adam_lr_base = args.table_adam_lr if args.adam_lr is None else args.adam_lr
     value_embedding_table_adam_lr_base = (
         table_adam_lr_base
@@ -913,6 +1180,11 @@ def main():
         "jaxlib_version": jaxlib.__version__,
         "overfit_batch": args.overfit_batch,
         "eval_batches": args.eval_batches,
+        "route_probe_samples": args.route_probe_samples,
+        "route_probe_source": args.route_probe_source,
+        "route_probe_dir": None if args.route_probe_dir is None else str(args.route_probe_dir),
+        "route_probe_seed": args.route_probe_seed,
+        "route_probe_moe_layer_indices": moe_layer_indices,
         "measure_start_step": args.measure_start_step,
         "compilation_cache_dir": None if args.disable_compilation_cache else str(args.compilation_cache_dir),
         "devices": [str(d) for d in jax.devices()],
@@ -995,6 +1267,15 @@ def main():
         eval_t_step_from_frac(diffusion_cfg, args.eval_t_frac)
         if diffusion_cfg is not None
         else None
+    )
+    route_probe_state = make_route_probe_state(
+        args=args,
+        dataset=dataset,
+        eval_dataset=eval_dataset,
+        diffusion_cfg=diffusion_cfg,
+        eval_fixed_t_step=eval_fixed_t_step,
+        model_context=model_context,
+        moe_layer_indices=moe_layer_indices,
     )
     compile_start = time.perf_counter()
     first_metrics = None
@@ -1225,6 +1506,10 @@ def main():
                 )
                 row["eval_loss"] = eval_metrics["loss"]
                 row["eval_z_loss"] = eval_metrics["z_loss"]
+                if route_probe_state is not None:
+                    route_probe_start = time.perf_counter()
+                    update_route_probe(model, row, step, route_probe_state)
+                    row["route_probe_time_sec"] = time.perf_counter() - route_probe_start
             last_row = row
 
             if step % args.log_every == 0:

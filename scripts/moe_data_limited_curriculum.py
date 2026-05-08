@@ -66,6 +66,8 @@ DEFAULT_MASK_TOKEN_ID = 8192
 DEFAULT_BD3_BLOCK_LEN = 4
 DEFAULT_EVAL_BATCHES = 4
 DEFAULT_LOG_EVERY = 200
+DEFAULT_ROUTE_PROBE_SAMPLES = 0
+DEFAULT_ROUTE_PROBE_SOURCE = "eval"
 DEFAULT_WARMUP_STEPS = 100
 DEFAULT_SEED = 42
 DEFAULT_P_VALUES = (0.0, 0.3)
@@ -540,6 +542,8 @@ def cmd_init(args: argparse.Namespace) -> int:
             "bd3_block_len": DEFAULT_BD3_BLOCK_LEN,
             "eval_batches": args.eval_batches,
             "log_every": args.log_every,
+            "route_probe_samples": args.route_probe_samples,
+            "route_probe_source": args.route_probe_source,
             "save_best_checkpoint": True,
             "save_final_checkpoint": True,
             "wandb_group": WANDB_GROUP,
@@ -640,7 +644,7 @@ def command_for_run(run: dict[str, Any], controls: dict[str, Any]) -> list[str]:
         "--eval-path",
         run["eval_path"],
         "--seed",
-        str(DEFAULT_SEED),
+        str(int(run.get("seed", DEFAULT_SEED))),
         "--run-name",
         run["run_name"],
         "--output-dir",
@@ -684,6 +688,16 @@ def command_for_run(run: dict[str, Any], controls: dict[str, Any]) -> list[str]:
         "--wandb-group",
         controls["wandb_group"],
     ]
+    route_probe_samples = int(controls.get("route_probe_samples", 0) or 0)
+    if route_probe_samples > 0:
+        cmd.extend(
+            [
+                "--route-probe-samples",
+                str(route_probe_samples),
+                "--route-probe-source",
+                str(controls.get("route_probe_source", DEFAULT_ROUTE_PROBE_SOURCE)),
+            ]
+        )
     restore = run.get("restore_checkpoint")
     if restore:
         cmd.extend(["--restore-checkpoint", restore])
@@ -721,6 +735,7 @@ def command_for_run(run: dict[str, Any], controls: dict[str, Any]) -> list[str]:
         wd_tag(float(run["wd"])),
         f"b{DEFAULT_BD3_BLOCK_LEN}" if run["objective"] == "bd3lm" else "ar_prefix",
     ]
+    tags.extend(str(tag) for tag in run.get("wandb_extra_tags", []))
     cmd.extend(["--wandb-tags", *tags])
     return cmd
 
@@ -994,6 +1009,12 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--bd3-lr-mult", type=float, default=DEFAULT_BD3_LR_MULT)
     init.add_argument("--eval-batches", type=int, default=DEFAULT_EVAL_BATCHES)
     init.add_argument("--log-every", type=int, default=DEFAULT_LOG_EVERY)
+    init.add_argument("--route-probe-samples", type=int, default=DEFAULT_ROUTE_PROBE_SAMPLES)
+    init.add_argument(
+        "--route-probe-source",
+        choices=("eval", "train"),
+        default=DEFAULT_ROUTE_PROBE_SOURCE,
+    )
     init.set_defaults(func=cmd_init)
 
     list_p = sub.add_parser("list", help="list runs")
