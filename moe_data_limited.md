@@ -168,12 +168,159 @@ stop around the expected best window.
 
 ## Next Steps
 
-1. Rerun `muon_wd=0.2, lr_mult=2.0` with best-checkpoint saving, or cap/early
-   stop around `3000-3300` steps.
-2. Probe around the new best with values such as `muon_wd=0.15`, `0.2`, and
-   `0.3`, preferably with best checkpoint enabled.
-3. Consider `muon_wd=0.2` with a slightly lower LR, for example `lr_mult=1.5` or
-   `1.0`, to see whether the late instability can be avoided without losing the
-   lower validation minimum.
-4. Keep selecting by both best eval and health. A run that reaches a low eval
-   but explodes later is useful only if the best checkpoint is saved.
+Validate that the curriculum result `p_ar=0.30, b=4` from
+`BD3_CURRICULUM_FINDINGS.md` (compute-bound, 1.7 epochs) also holds in the
+data-constrained, multi-epoch regime.
+
+### Readiness
+
+The repo now has the pieces needed to run this end to end once GPU/data prep is
+available:
+
+- `data/prepare_climbmix.py` prepares a tokenized ClimbMix source with N train
+  shards, one eval shard, and a fresh byte-level BPE tokenizer.
+- `scripts/moe_data_limited_curriculum.py` derives 0.5x, 1x, and 2x-shard
+  datasets, computes exact token counts/32-epoch step counts from metadata, and
+  launches the BD3 curriculum queue.
+- The launcher applies weight decay to all optimizer families for this sweep:
+  `muon_wd = adam_wd = router_adam_wd`.
+- `train_ar.py` already supports the required mechanics: AR source checkpoints,
+  BD3 restore from AR, local best/final checkpoints, directory-backed `.npy`
+  datasets, data parallelism, and MoE health metrics.
+
+I have not run the actual training locally because this needs GPUs.
+
+### Data prep
+
+Prepare the source once from `data/`:
+
+```bash
+cd data
+python prepare_climbmix.py \
+  --output-dir climbmix_10x_newtok_8192 \
+  --num-shards 10 \
+  --val-shard 6542 \
+  --vocab-size 8192
+cd ..
+```
+
+Then derive the three data-limited subsets:
+
+```bash
+python scripts/moe_data_limited_curriculum.py prepare-datasets \
+  --source-data-root data/climbmix_10x_newtok_8192 \
+  --labels u25mish u50mish u100mish
+```
+
+The derived datasets are:
+
+| Label | Dataset dir | Selection | Target size |
+| --- | --- | --- | --- |
+| `u25mish` | `data/climbmix_0p5x_newtok_8192` | first half of `shard_00000` | ~25M tokens |
+| `u50mish` | `data/climbmix_1x_newtok_8192` | all of `shard_00000` | ~50M tokens |
+| `u100mish` | `data/climbmix_2x_newtok_8192` | all of `shard_00000` and `shard_00001` | ~100M tokens |
+
+Use the exact `train_token_count` and `steps_for_epochs` fields written to each
+dataset's `metadata.json` for reporting.
+
+### Grid
+
+12 runs, single seed each, on `4xH100`.
+
+| Axis | Values |
+| --- | --- |
+| Method | `p_ar=0` (scratch BD3 b=4); `p_ar=0.30` (AR -> BD3 b=4) |
+| U (unique tokens) | `u25mish`, `u50mish`, `u100mish` |
+| WD | 0, 0.1 applied as `muon_wd = adam_wd = router_adam_wd` |
+
+Total: 2 methods x 3 U x 2 WD = 12 runs.
+
+For `p_ar=0.30`, each experiment cell is two process runs: an AR prefix run
+through 30% of the total steps, then a BD3 b=4 run restored from the AR final
+checkpoint through the full 32-epoch step count.
+
+### Steps per U
+
+Tokens per optimizer step = `512 x 512 = 262,144`. Steps are computed after
+data prep as:
+
+`ceil(32 x train_token_count / 262,144)`
+
+Approximate planning numbers:
+
+| U | Total training-token budget | Approx steps |
+| ---: | ---: | ---: |
+| 25M | 800M | 3,050 |
+| 50M | 1.6B | 6,100 |
+| 100M | 3.2B | 12,200 |
+
+### Fixed hyperparameters
+
+| Parameter | Value |
+| --- | --- |
+| AR phase config | `configs/experiments/ar_moe_old_bundle.yaml` with `--vocab-size 8193` for BD3 restore compatibility |
+| BD3 config | `configs/experiments/mdlm_moe_old_bundle.yaml` |
+| BD3 block length | 4 |
+| BD3 / scratch `lr_mult` | 2.0 |
+| AR-phase `lr_mult` (curriculum only) | 5.0 |
+| WD scope | `muon_wd = adam_wd = router_adam_wd = {0.0, 0.1}` |
+| MoE override | `--no-moe-split-router-input`, `--moe-router-z-loss-weight 0.01` |
+| Dropout | 0.0 |
+| Eval cadence | every 200 steps |
+| Checkpoints | local best and final enabled; W&B checkpoint artifact upload disabled |
+| Devices | 4 H100 |
+| Seeds | 1 per cell |
+
+### Initial launch
+
+Initialize the full queue, but start with only `u25mish`:
+
+```bash
+python scripts/moe_data_limited_curriculum.py init \
+  --data-labels u25mish u50mish u100mish \
+  --force
+
+python scripts/moe_data_limited_curriculum.py list --data-label u25mish
+python scripts/moe_data_limited_curriculum.py next --data-label u25mish --command
+python scripts/moe_data_limited_curriculum.py launch-next --data-label u25mish
+```
+
+For `u25mish`, this corresponds to 4 experiment cells and 6 process runs:
+
+- `p_ar=0.0`, `wd=0.0`: scratch BD3 b=4.
+- `p_ar=0.0`, `wd=0.1`: scratch BD3 b=4.
+- `p_ar=0.3`, `wd=0.0`: AR prefix, then BD3 b=4 restored from AR final.
+- `p_ar=0.3`, `wd=0.1`: AR prefix, then BD3 b=4 restored from AR final.
+
+The launcher will only start a `p_ar=0.3` BD3 continuation after the matching AR
+final checkpoint exists.
+
+### Compute estimate (4xH100)
+
+Step times: scratch BD3 b=4 ~= 0.75 s/step; curriculum p=0.30 b=4 ~= 0.57 s/step.
+
+| U | scratch run | curriculum run |
+| ---: | ---: | ---: |
+| 25M | 38 min | 29 min |
+| 50M | 76 min | 58 min |
+| 100M | 153 min | 116 min |
+
+Per-WD subtotal: ~7.8 h. Both WDs: **~15.7 h wall-clock total**.
+
+### Reporting
+
+For each (U, method, wd) tuple log: `best_eval`, `best_step`, `final_eval`,
+recent MoE drop fraction, recent router entropy. Format the results as a
+2 x 3 x 2 table and drop into `final_report.tex` Section 6.
+
+### Pass criterion
+
+The curriculum claim holds in the data-constrained regime if, at every U and
+at the better-of-`{wd=0, wd=0.1}` setting, `p_ar=0.30` matches or beats
+`p_ar=0` on `best_eval`.
+
+### Launch order
+
+1. Run all `u25mish` cells first.
+2. Inspect loss curves, best checkpoints, MoE drop fraction, and router entropy.
+3. If healthy, continue the queue for `u50mish` and `u100mish`.

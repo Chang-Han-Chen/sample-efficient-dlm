@@ -1,9 +1,9 @@
 """Prepare Nvidia ClimbMix shards for JAX training.
 
 This script intentionally supports small smoke preps and full data preps with
-the same metadata layout. It downloads parquet shards, trains a 32k byte-level
-BPE tokenizer, tokenizes each shard into flat `.npy` token streams, and writes
-metadata needed to reproduce the run.
+the same metadata layout. It downloads parquet shards, trains a byte-level BPE
+tokenizer (8k vocab by default), tokenizes each shard into flat `.npy` token
+streams, and writes metadata needed to reproduce the run.
 """
 
 from __future__ import annotations
