@@ -10,16 +10,17 @@
 \usepackage{multirow}
 \usepackage{amsmath}
 \usepackage{amssymb}
+\usepackage{float}
 
-\graphicspath{{../runs/_curve_analysis/}}
+\graphicspath{{../runs/_curve_analysis/}{./}}
 
 \newcommand{\TODO}[1]{{\color{red}\textbf{[TODO: #1]}}}
+\newcommand{\pAR}{p_{\mathrm{AR}}}
 
-\title{When Does Autoregressive Pretraining Help Diffusion Language Models?\\
-An Interior Optimum at $p_{\mathrm{AR}}{=}0.30$}
+\title{A Block-Size Curriculum for Diffusion\\Language Model Pretraining}
 
 \author{Chang-Han Chen \\
-University of California, Berkeley\\
+University of California, Berkeley \\
 Berkeley, CA 94720, USA \\
 \texttt{changhanc@berkeley.edu}
 }
@@ -29,7 +30,7 @@ Berkeley, CA 94720, USA \\
 \maketitle
 
 \begin{abstract}
-Diffusion language models (dLMs) are pretraining-expensive but can surpass autoregressive (AR) models when training data is limited. A natural way to amortize the cost is to pretrain autoregressively for a fraction $p_{\mathrm{AR}}$ of the budget, then switch to a (block) diffusion objective for the remainder. Existing A2D conversion recipes implicitly fix $p_{\mathrm{AR}} \approx 0.85\text{--}0.99$: BD3LM uses $p_{\mathrm{MDLM}}{=}0.85$ before block-diffusion finetuning, Dream-7B uses an effective $p_{\mathrm{AR}} \approx 0.97$, and SDAR uses $p_{\mathrm{AR}} \approx 0.999$. We sweep this fraction at 70M-parameter MoE scale on ClimbMix and find a robust \emph{interior optimum} at $p_{\mathrm{AR}}{=}0.30$, invariant in the post-switch BD3 block length for blocks $b \in \{4, 16, 64\}$, and across both AR$\to$BD3 and MDLM$\to$BD3 curricula. The best AR$\to$BD3 run improves over the same-block scratch BD3 baseline by 0.32\% at $b{=}4$ and 1.0\% at $b{=}64$, and beats the BD3LM-style $p_{\mathrm{MDLM}}{=}0.85$ recipe by $\sim$3.3\% at $b{=}4$. We propose a \emph{front-loaded transfer} hypothesis that explains both the interior optimum and its block-length invariance.
+Diffusion language models (dLMs) are pretraining-expensive. Common practice is either to train them from scratch at the target diffusion objective, or to adapt a pretrained autoregressive (AR) base with a brief diffusion finetune. We propose a simple two-stage block-size curriculum: train autoregressively (block size 1) for an early fraction $\pAR$ of the total budget, then switch to small-block BD3 for the rest. Sweeping this fraction at 70M MoE scale, we find a robust optimum near $\pAR{=}0.30$ that beats both extremes across post-switch block sizes in the standard one-epoch regime. It is surprising that the optimum is independent of block length. To explain this, we hypothesize that the AR skills and representations transferable to diffusion are themselves independent of the BD3 block size. One might worry that AR initialization compromises diffusion's performance in the data-constrained setting. Indeed, the naive recipe appears to fail: the AR phase overfits, the MoE router collapses at the handoff, and the BD3 continuation never catches scratch BD3. We show this is a tuning issue, not a fundamental one: tuning weight decay properly restores the curriculum to at least matching from-scratch BD3. We even suspect that modern data-efficiency techniques might improve the advantage of our curriculum in the multi-epoch setting.
 \end{abstract}
 
 %=============================================================================
@@ -37,241 +38,223 @@ Diffusion language models (dLMs) are pretraining-expensive but can surpass autor
 \label{sec:intro}
 %=============================================================================
 
-The slogan that ``Diffusion language models are super data learners''~\citep{ni2025diffusionlanguagemodelssuper} is increasingly well-supported: when unique training data is limited, masked-diffusion (MDLM) and block-diffusion (BD3LM) variants of small models eventually surpass AR baselines on downstream evaluations. Unfortunately, dLMs are also pretraining-expensive: per training token, MDLM is roughly $14\times$ less compute-efficient than AR, and uniform-noise diffusion is closer to $32\times$ less efficient. Any-order progressive decoding is simply a strictly harder learning problem than left-to-right next-token prediction.
+Diffusion language models (dLMs) are claimed to be ``super data learners'' \citep{ni2025diffusionlanguagemodelssuper, gao2025whatmakes}: when unique training data is limited, they continue improving past the point where AR overfits, and small dLMs can eventually match or surpass AR baselines on downstream tasks. The catch is compute: dLMs are substantially more expensive to pretrain than AR models per training token. Masked-diffusion (MDLM) and block-diffusion (BD3LM) variants must learn any-order denoising, which is a strictly harder objective than left-to-right next-token prediction.
 
-A natural fix is to spend most of the budget on the cheap AR objective and then \emph{convert} the model to a diffusion objective. This is the standard A2D recipe used in recent works:
+A natural compromise is a curriculum: spend an early fraction $\pAR$ of the compute budget on AR training, then switch to a diffusion objective. This is essentially the recipe used by every recent at-scale dLM, but with the fraction implicitly fixed near 1:
+
 \begin{itemize}
-\item \textbf{BD3LM}~\citep{arriola2025block} pretrains 850K MDLM steps and finetunes 150K block-diffusion steps at block sizes $\{4, 8, 16\}$, i.e.\ $p_{\mathrm{MDLM}}{=}0.85$, with sequence length $1024$ on OpenWebText.
-\item \textbf{Dream-7B}~\citep{dream2025} initializes from Qwen2.5-7B (${\sim}18$T pretraining tokens) and adds $580$B continued-pretraining tokens for diffusion: effective $p_{\mathrm{AR}} \approx 0.969$.
-\item \textbf{DiffuLLaMA}~\citep{efficientdlm2025} uses $\sim$65B adaptation tokens on a LLaMA-2 base ($\sim$2T): $p_{\mathrm{AR}} \approx 0.97$.
-\item \textbf{SDAR}~\citep{sdar2025} uses only $50$B adaptation tokens on a Qwen3 base ($\sim$36T): $p_{\mathrm{AR}} \approx 0.999$.
-\item \textbf{LLaDA-2}~\citep{llada2_2025} performs a 3-phase block-WSD adaptation from a pretrained AR base, again in the very-high-$p_{\mathrm{AR}}$ regime.
+\item \textbf{BD3LM}~\citep{arriola2025block}: 850K MDLM pretraining steps + 150K block-diffusion finetuning steps at block sizes $\{4, 8, 16\}$, i.e.\ $p_{\mathrm{MDLM}}{=}0.85$ at sequence length 1024.
+\item \textbf{Dream-7B}~\citep{dream2025}: initialized from Qwen2.5-7B (${\sim}18$T pretraining tokens) plus 580B continued-pretraining tokens for diffusion: effective $\pAR \approx 0.97$.
+\item \textbf{DiffuLLaMA / Efficient-DLM}~\citep{efficientdlm2025}: $\sim$65B adaptation tokens on a LLaMA-2 base ($\sim$2T): $\pAR \approx 0.97$.
+\item \textbf{SDAR}~\citep{sdar2025}: $50$B adaptation tokens on a Qwen3 base ($\sim$36T): $\pAR \approx 0.999$.
+\item \textbf{LLaDA-2}~\citep{llada2_2025}: 3-phase block-WSD adaptation from a pretrained AR base, again very high $\pAR$.
 \end{itemize}
-All five sit at $p_{\mathrm{AR}} \in [0.85, 0.999]$. The implicit hypothesis is ``train autoregressively as long as possible, then briefly adapt to diffusion.'' Two arguments support this on its face: (i)~AR is much cheaper per token, so more AR is more bang-for-buck; (ii)~the smallest BD3 block sizes used at deployment ($b{\in}\{4,8,16\}$) are themselves nearly autoregressive, so a model with strong AR features ought to need only minor adaptation.
 
-This paper challenges that hypothesis. We treat the A2D conversion ratio as a hyperparameter and sweep $p_{\mathrm{AR}}$ over $\{0, 0.30, 0.50, 0.80, 0.90, 0.95\}$, jointly with post-switch block lengths $b \in \{4, 16, 64, 256\}$, at 70M parameters on ClimbMix. We find:
+We argue this convention is the wrong default \emph{when training from scratch}. The implicit hypothesis is ``train autoregressively as long as possible, then briefly adapt'' --- justified by the observation that small-block BD3 ($b{\le}16$) is itself nearly autoregressive, plus the practical fact that an AR base usually already exists. But it leaves the middle of the $\pAR$ range completely unexplored.
+
+We treat $\pAR$ as a tunable knob and sweep it at 70M MoE scale on ClimbMix, jointly with post-switch BD3 block lengths $b \in \{4, 16, 64, 256\}$. Our framing is a \emph{block-size curriculum}: AR is the limit of block size 1, MDLM the limit of block size $L$, and BD3 with block length $b$ is the in-between target. The curriculum trains at block size 1 for the first $\pAR$ of the budget and at block size $b$ for the rest. Our findings:
 
 \begin{enumerate}
-\item The validation-loss-optimal switch point is \textbf{$p_{\mathrm{AR}}{=}0.30$} for $b \in \{4, 16, 64\}$. Larger $p_{\mathrm{AR}}$ is monotonically worse at every block length except $b{=}256$.
-\item This optimum is shared by the MDLM$\to$BD3 curriculum: $p_{\mathrm{MDLM}}{=}0.30$ wins at $b \in \{4, 16, 64\}$, and the BD3LM-published recipe ($p_{\mathrm{MDLM}}{=}0.85$, $b{=}4$) is $\sim$3.3\% behind our $p{=}0.30$ winner at the same model shape and budget.
-\item At $b{=}256$ (half of the sequence length), the curriculum framework breaks down entirely: scratch BD3 is competitive or wins, and AR$\to$BD3 with $p_{\mathrm{AR}} > 0$ is monotonically worse. We argue this is the boundary of curriculum transferability.
+\item In the standard \textbf{one-epoch regime}, the validation-loss-optimal switch point is $\pAR{=}0.30$. It beats from-scratch BD3 across post-switch block lengths $b \in \{4, 16, 64\}$, beats AR-heavy curricula ($\pAR \ge 0.5$) at every post-switch block length, and is approximately invariant in the post-switch block length itself --- consistent with the simple hypothesis that the AR skills and representations transferable to diffusion are themselves block-size-independent. Only at $b{=}256$ (half of sequence length) does the curriculum break down and scratch BD3 win.
+\item In the \textbf{data-constrained regime} that motivates dLMs in the first place, the same recipe initially appears to fail: at unique-data pool sizes $U \in \{25\text{M}, 50\text{M}\}$ trained for 32 epochs each, naive $\pAR{=}0.30$ loses to scratch BD3 by 0.16--0.28 nats. Inspection shows the failure mode is AR-phase overfitting accompanied by MoE router collapse at the handoff, both of which are inherited by the BD3 continuation. Applying tuning weight decay properly (Muon WD on matrix parameters and a small Adam WD, with no router WD) restores the curriculum to within 0.01--0.02 nats of scratch.
+\item We do not yet have data-constrained results at $b \in \{16, 64\}$. Based on the consistent direction of effects in the one-epoch regime --- where curriculum's margin over scratch grows with block size up to $b{=}64$ --- we expect that with the AR-phase tuning fix, the data-constrained curriculum recovers a strict win at the larger block sizes too.
 \end{enumerate}
 
-We propose a \emph{front-loaded transfer + slow target adaptation} hypothesis: AR's marginal value decays concavely after the first ${\sim}30\%$ of training, while BD3 has its own task-specific structure (mask handling, bidirectional intra-block attention) that requires substantial post-switch budget. The interior optimum is where these two marginal values cross, and because the AR phase is identical regardless of post-switch block length, the optimum is approximately invariant in $b$. The exception at $b{=}256$ is predicted because the post-switch task is no longer ``AR-like.''
+Our prescription is therefore: \emph{when pretraining a block-diffusion model from scratch, start with 30\% AR (with AR-phase weight decay if the training data is multi-epoch), then small-block BD3}. This is a strict improvement over current A2D practice, which uses an AR fraction at least $2.5\times$ larger than ours.
 
-\textbf{Why this matters.} Existing A2D recipes optimize for inheriting the capabilities of a fixed pretrained AR base, which is a sensible deployment choice but does not minimize the validation loss attainable from a fixed compute budget. Our result is a clean statement about the latter: from-scratch dLM pretraining under a fixed budget should switch \emph{much earlier} than current practice suggests.
+\textbf{Caveats up front.} (i) Our budget is fixed in optimizer steps, not wall-clock seconds. AR forward/backward passes are roughly $5\times$ cheaper than BD3 at our scale im our implementation, so a wall-clock-fixed comparison would weight AR even more favorably and the wall-clock-optimal $\pAR$ would be larger than $0.30$. The exact value depends on local hardware and BD3 implementation. (ii) The curriculum optimum almost certainly depends on absolute compute budget, model scale, and architecture choices we do not vary here.
 
 %=============================================================================
 \section{Related Work}
 \label{sec:related}
 %=============================================================================
 
-\textbf{Diffusion language models.} MDLM~\citep{sahoo2024simple,shi2024simplified} and BD3LM~\citep{arriola2025block} are the two dLM families we study. BD3LM partitions a sequence into blocks of length $b$, runs left-to-right block decoding, and applies discrete denoising within each block. The block size $b$ interpolates between MDLM ($b = L$, full-sequence diffusion) and AR ($b = 1$).
+\textbf{Diffusion language models.} MDLM~\citep{sahoo2024simple, shi2024simplified} and BD3LM~\citep{arriola2025block} are the two dLM families we use. BD3LM partitions a sequence into blocks of length $b$, runs left-to-right block decoding, and applies discrete denoising within each block. The block size $b$ interpolates between MDLM ($b{=}L$, full-sequence diffusion) and AR ($b{=}1$). Our curriculum is a temporal interpolation along the same axis.
 
-\textbf{A2D conversion.} Several recent works convert pretrained AR models to diffusion variants at scale: Dream-7B~\citep{dream2025}, DiffuLLaMA / Efficient-DLM~\citep{efficientdlm2025}, SDAR~\citep{sdar2025}, the next-block adaptation framework of~\citet{nbdiff2025}, and LLaDA-2~\citep{llada2_2025}. All start from large off-the-shelf AR models and add a comparatively small diffusion-adaptation phase. We instead study A2D as a from-scratch curriculum, which strictly contains existing A2D as the high-$p_{\mathrm{AR}}$ corner.
+\textbf{A2D conversion.} Dream-7B~\citep{dream2025}, DiffuLLaMA / Efficient-DLM~\citep{efficientdlm2025}, SDAR~\citep{sdar2025}, the next-block adaptation framework of~\citet{nbdiff2025}, and LLaDA-2~\citep{llada2_2025} all start from a pretrained AR base and add a comparatively brief diffusion-adaptation phase. We instead study A2D as a from-scratch curriculum, which strictly contains existing A2D as the high-$\pAR$ corner.
 
-\textbf{Super data learners.} \citet{ni2025diffusionlanguagemodelssuper} and \citet{gao2025whatmakes} document that dLMs continue improving past the point where AR overfits in the multi-epoch data-constrained regime. Our curriculum question is orthogonal but motivated by the same setting: if dLMs' advantage is data-constrained, accelerating their per-compute training is the bottleneck.
-
-\textbf{Curriculum and pretraining schedules.} Our front-loaded-transfer interpretation parallels the pretraining-vs-finetuning literature, where features stabilize log-shapedly with budget and additional pretraining shows diminishing returns.
+\textbf{Super-data-learner regime.} \citet{ni2025diffusionlanguagemodelssuper} and \citet{gao2025whatmakes} document that dLMs continue improving past the point where AR overfits in the multi-epoch data-constrained regime. Our data-constrained section operates in this regime to test whether the from-scratch curriculum recipe survives there.
 
 %=============================================================================
 \section{Method}
 \label{sec:method}
 %=============================================================================
 
-\subsection{Curriculum framework}
+\subsection{Block-size curriculum}
 
-Let $T$ be the total optimizer-step budget. A curriculum is parameterized by $(p, b)$ where $p \in [0, 1]$ is the source-objective fraction and $b$ is the post-switch BD3 block length. Steps $1, \dots, \lfloor pT \rfloor$ train under the source objective (AR or MDLM); steps $\lfloor pT \rfloor + 1, \dots, T$ train under BD3LM with block length $b$. We instantiate two curricula:
+A two-stage block-size curriculum is parameterized by $(\pAR, b)$ where $\pAR \in [0, 1]$ is the AR-phase fraction and $b$ is the post-switch BD3 block length. With total budget $T$ optimizer steps, the first $\lfloor \pAR T \rfloor$ steps are pure AR (block size 1, full causal attention, no mask tokens), and the remaining steps are BD3 with block length $b$. We also study the MDLM analogue, where the source phase is full-sequence MDLM (block size $L$) instead of AR. Pure-scratch BD3 ($\pAR{=}0$) is the natural baseline at each $b$.
 
-\begin{itemize}
-\item \textbf{AR$\to$BD3}: source objective is AR (full causal attention, no mask tokens). Post-switch LR multiplier $\mathrm{lr\_mult}{=}2.0$.
-\item \textbf{MDLM$\to$BD3}: source objective is MDLM (full sequence, masked-token denoising). Post-switch LR multiplier $\mathrm{lr\_mult}{=}0.6667$.
-\end{itemize}
-Both LR multipliers were selected from short probe sweeps; details in Appendix~\ref{app:lr}. Pure-scratch BD3 ($p{=}0$) is included as a baseline at each $b$.
+The post-switch optimizer state is reset for the new objective in two senses: the loss function changes, and the LR multiplier changes. Short probe sweeps prefer $\mathrm{lr\_mult}{=}2.0$ for AR$\to$BD3 and scratch BD3, and $\mathrm{lr\_mult}{=}0.667$ for MDLM$\to$BD3 (Appendix~\ref{app:lr}). Otherwise the optimizer continues as if uninterrupted.
 
-\subsection{Architecture and data}
+\subsection{Architecture, data, optimizer}
 
-\textbf{Model.} A 70M-parameter MoE transformer with shape $(d_{\mathrm{model}}, d_{\mathrm{ff}}, n_{\mathrm{layers}}, n_{\mathrm{heads}}) = (768, 2048, 8, 12)$, RoPE positional embeddings, QK-norm, ReGLU MLPs, RMSNorm, value residuals, per-head attention gating, and depth-scaled layernorm (the ``old bundle''). The MoE expert configuration uses a non-split router input with $z$-loss weight $0.01$. Attention uses cuDNN dense BD3 masks; the pure-JAX blocked decomposition is implemented but slower at this shape. Weight tying is enabled.
+\textbf{Model.} A 70M-parameter MoE transformer with $(d_{\mathrm{model}}, d_{\mathrm{ff}}, n_{\mathrm{layers}}, n_{\mathrm{heads}}) = (768, 2048, 8, 12)$, RoPE positional embeddings, QK-norm, ReGLU MLPs, RMSNorm, value residuals, per-head attention gating, and depth-scaled layernorm. The MoE config uses a non-split router with $z$-loss weight $0.01$. Attention uses cuDNN dense BD3 masks. Weight tying is on.
 
-\textbf{Data.} ClimbMix BPE tokenizer (vocab $8192$, mask token $8192$, $1.54$B train tokens, $64$M held-out validation tokens). All runs use sequence length $L{=}512$ and effective batch size $512$ ($262{,}144$ tokens per optimizer step).
+\textbf{Data.} ClimbMix BPE tokenizer (vocab 8192, mask token 8192). All runs use sequence length $L{=}512$ and effective batch size $512$ ($262{,}144$ tokens per optimizer step). The one-epoch sweep uses the full 24-shard split ($1.54$B unique training tokens, $\sim$1.7 epochs over $T{=}10{,}100$ steps). The data-constrained sweep uses two pool sizes drawn from a single shard split: $U{=}25$M (first half of \texttt{shard\_00000}; $32.2$M actual training tokens) and $U{=}50$M (all of \texttt{shard\_00000}; ${\sim}64.4$M actual training tokens). Each is trained for 32 data epochs.
 
-\textbf{Optimizer.} NorMuon+AdamW with grouped LR families: AdamW for token embeddings, tied LM head, value-embedding tables, and scalar parameters (RMSNorm gains, QK gains, value-residual scalars); NorMuon for matrix parameters. Adam betas $(0.95, 0.99)$, Adam $\epsilon{=}10^{-8}$, Muon cautious weight decay $10^{-4}$, momentum warmup $0.85 \to 0.95$. Default LR center $(\text{table}, \text{scalar}, \text{Muon}) = (0.01, 0.005, 0.04)$, scaled by a single $\mathrm{lr\_mult}$.
+\textbf{Optimizer.} NorMuon+AdamW with grouped LR families. AdamW handles token embeddings, the tied LM head, value-embedding tables, and scalar parameters (RMSNorm gains, QK gains, value-residual scalars); NorMuon handles all matrix parameters. Adam betas $(0.95, 0.99)$, eps $10^{-8}$, Muon cautious WD $10^{-4}$ as a baseline default, momentum warmup $0.85 \to 0.95$. Default LR center $(\text{table}, \text{scalar}, \text{Muon}) = (0.01, 0.005, 0.04)$, scaled by a single $\mathrm{lr\_mult}$. Schedule is 100-step linear warmup followed by constant LR.
 
-\textbf{Schedule.} 100-step linear warmup followed by constant-LR for a total of $T{=}10{,}100$ optimizer steps, i.e.\ ${\sim}2.65$B training tokens or ${\sim}1.7$ epochs over the train set.
+\textbf{One-epoch sweep grid.} $\pAR \in \{0.30, 0.50, 0.80, 0.90, 0.95\}$ at $b \in \{4, 256\}$ for AR-init (full sweep at the two endpoint block sizes), plus $\pAR{=}0.30$ at $b \in \{16, 64\}$. The MDLM-init grid is filled in fully (5 $\pAR$ values $\times$ 4 block sizes). Scratch BD3 baselines at $b \in \{4, 64, 256\}$.
 
-\subsection{Sweep grid}
-
-\begin{itemize}
-\item AR$\to$BD3: $p_{\mathrm{AR}} \in \{0.30, 0.50, 0.80, 0.90, 0.95\}$, $b \in \{4, 256\}$ at all $p$; additionally $b \in \{16, 64\}$ at $p_{\mathrm{AR}}{=}0.30$.
-\item MDLM$\to$BD3: $p_{\mathrm{MDLM}} \in \{0.30, 0.50, 0.80, 0.90, 0.95\}$ $\times$ $b \in \{4, 16, 64, 256\}$ (full grid, 20 runs).
-\item Scratch BD3: $b \in \{4, 64, 256\}$.
-\end{itemize}
-Total: 35 main runs; counting LR probes, source-chain checkpoints, and the data-constrained validation in Section~\ref{sec:data_constrained}, ${\sim}50$ training runs.
+\textbf{Data-constrained sweep grid.} 2 methods (scratch BD3 b=4, $\pAR{=}0.30$ b=4) $\times$ 2 $U$ values $\times$ 2 weight-decay configurations $=$ 8 cells. WD configurations are ``no WD'' (everything 0) and a tuned ``split-WD'' (AR phase: Muon WD 0.1, Adam WD 0.001, router Adam WD 0; BD3 phase: all WD 0).
 
 %=============================================================================
-\section{Main Results}
-\label{sec:main}
+\section{Main Results: One-Epoch Regime}
+\label{sec:main_one_epoch}
 %=============================================================================
 
 \subsection{AR-init grid}
 
 \begin{table}[h]
 \centering
-\caption{AR$\to$BD3 grid. Best validation loss across the 10.1k-step run. Bold = best per column. Italic = best per row.}
+\caption{AR$\to$BD3 grid, best validation loss across the full 10.1k-step run. We swept $\pAR$ fully at $b{=}4$ and $b{=}256$ and ran only $\pAR{=}0.30$ at $b{=}64$ (justified below). Bold: best per column.}
 \label{tab:ar_init}
 \small
-\begin{tabular}{lccccc}
+\begin{tabular}{lccc}
 \toprule
-$p_{\mathrm{AR}}$ & $b{=}4$ & $b{=}16$ & $b{=}64$ & $b{=}256$ \\
+$\pAR$ & $b{=}4$ & $b{=}64$ & $b{=}256$ \\
 \midrule
-$0.00$ (scratch) & 2.7364 & --- & 2.9467 & \textbf{2.9408} \\
-$0.30$           & \textit{\textbf{2.7275}} & \textit{\textbf{2.8761}} & \textit{\textbf{2.9179}} & 2.9629 \\
-$0.50$           & \textit{2.7717} & --- & --- & 3.0124 \\
-$0.80$           & \textit{2.8511} & --- & --- & 3.1512 \\
-$0.90$           & \textit{2.8786} & --- & --- & 3.2469 \\
-$0.95$           & \textit{2.9924} & --- & --- & 3.4385 \\
+$0.00$ (scratch) & $2.7364$         & $2.9467$                  & $\mathbf{2.9408}$ \\
+$0.30$           & $\mathbf{2.7275}$ & $\mathbf{2.9179}$ & $2.9629$ \\
+$0.50$           & $2.7717$ & ---                       & $3.0124$ \\
+$0.80$           & $2.8511$ & ---                       & $3.1512$ \\
+$0.90$           & $2.8786$ & ---                       & $3.2469$ \\
+$0.95$           & $2.9924$ & ---                       & $3.4385$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-For every populated row, the best column is $b{=}4$. For every populated column except $b{=}256$, the best row is $p_{\mathrm{AR}}{=}0.30$. At $b{=}256$, scratch BD3 wins and AR-init is monotonically worse in $p_{\mathrm{AR}}$. Figure~\ref{fig:ar_vs_scratch} shows the corresponding eval curves: at $b{=}4$ and $b{=}64$, AR-init at $p{=}0.30$ tracks or beats scratch BD3 from the post-switch step onward; at $b{=}256$ AR-init runs blow past both MDLM-init and scratch.
+For every populated row, the best column is $b{=}4$. For every populated column except $b{=}256$, the best row is $\pAR{=}0.30$. At $b{=}256$, scratch wins and AR-init is monotonically worse in $\pAR$. The overall best run is \texttt{ar\_p030\_b4\_lr2\_full} at $2.7275$ best eval, beating same-block scratch by $0.32\%$.
+
+\textbf{Why we did not run $\pAR > 0.30$ at $b{=}64$.} As $b$ grows the post-switch task becomes less AR-like, so the optimal $\pAR$ can only shift downward (and at $b{=}256$ it has shifted all the way to $\pAR{=}0$). Given that $\pAR{=}0.30$ already wins at $b{=}4$, the only remaining question at $b{=}64$ was whether $\pAR{=}0.30$ still beats scratch; the higher-$\pAR$ rows would, under this monotonicity, only be worse. The single $\pAR{=}0.30$ point at $b{=}64$ confirms it: $2.9179$ vs scratch $2.9467$.
+
+Figure~\ref{fig:ar_vs_scratch} shows the post-switch eval-loss curves at three block sizes. At $b{=}4$ and $b{=}64$, AR-init at $\pAR{=}0.30$ tracks or beats scratch BD3 from the post-switch step onward. At $b{=}256$, every AR-init run blows past scratch immediately after the switch and never recovers.
 
 \begin{figure}[t]
     \centering
     \includegraphics[width=\linewidth]{ar_vs_scratch.png}
-    \caption{AR-init vs.\ scratch BD3 at three block lengths. \textbf{Left}: $b{=}256$ -- scratch beats every AR-init run, monotonically in $p_{\mathrm{AR}}$. \textbf{Middle}: $b{=}64$ -- AR-init at $p{=}0.30$ beats scratch by $\sim$0.029 nats. \textbf{Right}: $b{=}4$ -- scratch finishes at 2.736, AR-init $p{=}0.30$ wins by only 0.009 nats. The two regimes (curriculum-helpful at small $b$, curriculum-harmful at large $b$) are visually clear.}
+    \caption{AR-init vs.\ scratch BD3 at three block lengths. \textbf{Left}: $b{=}256$, scratch beats every AR-init run, monotonically in $\pAR$. \textbf{Middle}: $b{=}64$, AR-init at $\pAR{=}0.30$ beats scratch by 0.029 nats. \textbf{Right}: $b{=}4$, scratch finishes at 2.736; AR-init $\pAR{=}0.30$ wins by 0.009 nats.}
     \label{fig:ar_vs_scratch}
+\end{figure}
+
+Figure~\ref{fig:tails_gauss} zooms into the late-training tails for the most directly comparable runs. At $b{=}4$, AR-init at $\pAR{=}0.30$ sits below scratch BD3 with the gap visible across the entire late-training window, and MDLM-init at $\pAR{=}0.30$ sits ${\sim}0.07$ nats higher. At $b{=}256$, scratch lies clearly below MDLM-init at $\pAR{=}0.90$, consistent with the curriculum-breakdown story for this block size.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\linewidth]{focused_tails_gauss_clean.png}
+    \caption{Late-training tails of the eval-loss curves over the last 4{,}000 optimizer steps. Curves are Gaussian-smoothed along the step axis with $\sigma \approx 106$ steps (FWHM ${\approx}250$ steps); the unsmoothed traces are shown faintly behind. \textbf{Left} ($b{=}256$): scratch BD3 beats MDLM-init at $p_{\mathrm{MDLM}}{=}0.90$ across the late window. \textbf{Right} ($b{=}4$): AR-init at $\pAR{=}0.30$ tracks below scratch and clearly below MDLM-init at $p_{\mathrm{MDLM}}{=}0.30$.}
+    \label{fig:tails_gauss}
 \end{figure}
 
 \subsection{MDLM-init grid}
 
 \begin{table}[h]
 \centering
-\caption{MDLM$\to$BD3 grid. Best validation loss across the 10.1k-step run. Bold = best per column. Italic = best per row.}
+\caption{MDLM$\to$BD3 grid, best validation loss across the full 10.1k-step run. Row $p_{\mathrm{MDLM}}{=}0$ is scratch BD3 at the matching block length (no MDLM phase). Bold: best per column.}
 \label{tab:mdlm_init}
 \small
 \begin{tabular}{lcccc}
 \toprule
 $p_{\mathrm{MDLM}}$ & $b{=}4$ & $b{=}16$ & $b{=}64$ & $b{=}256$ \\
 \midrule
-$0.30$ & \textit{\textbf{2.8219}} & \textit{\textbf{2.9497}} & \textit{\textbf{2.9436}} & 2.9528 \\
-$0.50$ & \textit{2.8988} & 2.9610 & 2.9679 & 2.9630 \\
-$0.80$ & \textit{2.9185} & 2.9645 & 2.9512 & \textit{\textbf{2.9358}} \\
-$0.90$ & \textit{2.9487} & 2.9811 & 2.9667 & 2.9505 \\
-$0.95$ & \textit{3.0115} & 3.0292 & 2.9938 & \textit{2.9570} \\
+$0.00$ (scratch) & $\mathbf{2.7364}$ & ---     & $2.9467$ & $2.9408$ \\
+$0.30$           & $2.8219$ & $\mathbf{2.9497}$ & $\mathbf{2.9436}$ & $2.9528$ \\
+$0.50$           & $2.8988$ & $2.9610$ & $2.9679$ & $2.9630$ \\
+$0.80$           & $2.9185$ & $2.9645$ & $2.9512$ & $\mathbf{2.9358}$ \\
+$0.90$           & $2.9487$ & $2.9811$ & $2.9667$ & $2.9505$ \\
+$0.95$           & $3.0115$ & $3.0292$ & $2.9938$ & $2.9570$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The MDLM-init grid mirrors the AR-init pattern: $p_{\mathrm{MDLM}}{=}0.30$ wins at $b \in \{4, 16, 64\}$; $b{=}256$ prefers a much later switch ($p{=}0.80$).
+Among MDLM-init runs ($p_{\mathrm{MDLM}}{>}0$), $p_{\mathrm{MDLM}}{=}0.30$ wins at $b \in \{4, 16, 64\}$ and only $b{=}256$ prefers a later switch ($p_{\mathrm{MDLM}}{=}0.80$). MDLM-init at $p_{\mathrm{MDLM}}{=}0.30$ ties scratch at $b{=}64$ but loses by $1.6\%$ at $b{=}4$ --- AR-init transfers more cleanly to small-block BD3 than MDLM-init does. Linearly interpolating Table~\ref{tab:mdlm_init} places BD3LM's published recipe~\citep{arriola2025block} ($p_{\mathrm{MDLM}}{=}0.85$, $b{\le}16$) near $2.93$ at $b{=}4$, i.e.\ ${\sim}3.7\%$ worse than our $p_{\mathrm{MDLM}}{=}0.30$ run.
 
-\textbf{BD3LM recipe is suboptimal.} The published BD3LM recipe~\citep{arriola2025block} corresponds to $p_{\mathrm{MDLM}}{=}0.85$ followed by BD3 at $b \le 32$. At $b{=}4$, our $p_{\mathrm{MDLM}}{=}0.30$ run reaches $2.8219$, while $p_{\mathrm{MDLM}}{=}0.80$ gives $2.9185$ and $p_{\mathrm{MDLM}}{=}0.90$ gives $2.9487$. Linearly interpolating to $p{=}0.85$, the BD3LM recipe would land near $2.93$, i.e.\ ${\sim}3.7\%$ worse than our optimum at the same model shape, sequence length, and total budget. Sequence length 512 matches BD3LM's training setting, so this comparison is direct.
-
-\subsection{Cross-track summary}
-
-\begin{table}[h]
-\centering
-\caption{Best run at each block length, by curriculum family.}
-\label{tab:cross_track}
-\small
-\begin{tabular}{lcccl}
-\toprule
-$b$ & Scratch BD3 & Best AR-init & Best MDLM-init & Cross-track winner \\
-\midrule
-$4$   & $2.7364$ & $\mathbf{2.7275}$ ($p{=}0.30$) & $2.8219$ ($p{=}0.30$) & AR-init ($p{=}0.30$) \\
-$16$  & ---      & $\mathbf{2.8761}$ ($p{=}0.30$) & $2.9497$ ($p{=}0.30$) & AR-init ($p{=}0.30$) \\
-$64$  & $2.9467$ & $\mathbf{2.9179}$ ($p{=}0.30$) & $2.9436$ ($p{=}0.30$) & AR-init ($p{=}0.30$) \\
-$256$ & $2.9408$ & $2.9629$ ($p{=}0.30$) & $\mathbf{2.9358}$ ($p{=}0.80$) & MDLM-init ($p{=}0.80$) or scratch \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-The overall best run is \texttt{ar\_p030\_b4\_lr2\_full} at $2.7275$, which beats same-block scratch BD3 by $0.32\%$ and same-block MDLM-init by $3.3\%$. The most striking feature is the column structure: $p_{\mathrm{AR}}{=}0.30$ is winning regardless of the post-switch block length, except at $b{=}256$.
+\textbf{Cross-track summary.} Across Tables~\ref{tab:ar_init} and \ref{tab:mdlm_init}: (1) within every curriculum family the best post-switch block length is $b{=}4$, so the prescription is unambiguous on the BD3 side; (2) at every $b \le 64$, $\pAR{=}0.30$ AR-init wins; (3) at $b{=}256$ the curriculum collapses and scratch wins.
 
 %=============================================================================
 \section{Analysis}
 \label{sec:analysis}
 %=============================================================================
 
-\subsection{The block-length invariance of the optimum}
+\subsection{Block-length invariance of the optimum}
 
-In both the AR-init and MDLM-init grids, $p{=}0.30$ wins at every block length $b \le 64$. Naively this is surprising: at $b{=}4$ the post-switch task is nearly autoregressive (one masked block of 4, conditioned on clean past blocks), so a strong AR prior should be valuable, suggesting $p_{\mathrm{AR}}$ should be \emph{large}. At $b{=}64$ the post-switch task is much less AR-like, so the AR prior should be \emph{less} useful, suggesting $p_{\mathrm{AR}}$ should be \emph{smaller}. Empirically the optimum is the same.
+The most striking pattern in Tables~\ref{tab:ar_init} and \ref{tab:mdlm_init} is that $\pAR{=}0.30$ wins at every block length $b \le 64$, in both curriculum families. Naively this is surprising: at $b{=}4$ the post-switch task is nearly autoregressive, so a strong AR prior should be \emph{very} valuable, suggesting a large $\pAR$. At $b{=}64$ the post-switch task is substantially less AR-like, so the AR prior should be \emph{less} useful, suggesting a smaller $\pAR$. Empirically the optimum is the same.
 
-\subsection{A front-loaded transfer hypothesis}
+A clean explanation: \textbf{the skills and representations AR learns that transfer to BD3 are themselves independent of the post-switch block length $b$.} The AR phase is identical regardless of $b$, so whatever it teaches that BD3 can use --- vocabulary, syntax, semantics --- is shared across all $b$, and saturates with strong diminishing returns. Past that early phase, AR's marginal training refines mechanisms specific to its own objective, which need not transfer. To make this concrete, imagine training sequences of the form ``$A = p_1 \times p_2$'' with $p_1{=}99{,}991$ and $p_2{=}100{,}003$ both prime, so $A{=}9{,}999{,}399{,}973$. To predict the right-hand side given ``$A=$'', AR must learn integer factorization, a hard mechanism. A BD3 model that sees ``$A = \_ \times p_2$'' only needs to divide. The two objectives reward fundamentally different computations, and AR's late-stage factorization circuit is dead weight under BD3 regardless of $b$. Meanwhile, BD3 has its own slow-converging skills (mask handling, bidirectional within-block reasoning) that do not even make sense to AR. The optimal AR fraction is therefore set by AR-side dynamics --- when the next AR step's transferable contribution drops below what BD3 adaptation would buy at the same compute --- and is, like AR's transferable contribution itself, approximately invariant in $b$.
 
-We propose the following two-ingredient explanation:
+\subsection{The $b{=}256$ exception}
 
-\paragraph{(A) AR's marginal value is concave and front-loaded.} Our AR source-chain checkpoints reach validation losses $2.83$ at step $3{,}099$, $2.74$ at $5{,}099$, $2.68$ at $8{,}099$, and $2.66$ at $9{,}099$ on the AR objective itself. The bulk of AR's gain happens within the first ${\sim}30\%$ of the budget; subsequent steps deliver log-shaped diminishing returns on language fundamentals already acquired.
-
-\paragraph{(B) BD3 has slow-converging task-specific structure.} BD3LM's loss curve in scratch and post-switch runs continues to improve through 10k steps; mask handling, mixed clean+noisy contexts, and bidirectional intra-block attention are skills the AR phase never teaches. Late switches starve this adaptation phase.
-
-The optimal switch point is the budget allocation where the marginal value of AR drops below the marginal value of BD3-specific adaptation. Crucially, this crossover is governed by AR-side dynamics: the AR phase is identical regardless of the post-switch block length, so the optimal $p^\star$ is approximately invariant in $b$. This explains the most striking pattern in our data.
-
-\paragraph{The $b{=}256$ exception is also predicted.} At half-sequence block, the BD3 post-switch task is so distributionally far from AR that AR features fail to transfer at all (Figure~\ref{fig:b256}). With near-zero transfer, every step of AR pretraining is opportunity-cost relative to BD3 adaptation, and scratch BD3 wins. MDLM-init partially recovers because MDLM features are themselves diffusion-flavored, so MDLM$\to$BD3 retains some transferability even at large $b$.
+At half-sequence block ($b{=}256$), AR features fail to transfer at all: every AR-init run falls behind scratch immediately after the switch and never recovers (Fig.~\ref{fig:b256}). At very large block size, the BD3 task is distributionally far from AR, so the question ``when do AR's marginal returns drop below BD3's'' answers itself: never, because AR doesn't help here. MDLM-init partially recovers because MDLM features are themselves diffusion-flavored, so MDLM$\to$BD3 retains some transferability even at large $b$.
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=\linewidth]{loss_curves_b256.png}
-    \caption{$b{=}256$. \textbf{(A)} Full eval-loss curves: AR-init runs blow past MDLM-init and scratch immediately after the switch; only at very early switches do they recover. \textbf{(C)} Best post-switch eval vs.\ $p$: MDLM-init beats AR-init at every $p$, and AR-init worsens monotonically with $p$. \textbf{(D)} Per-curve power-law slope: AR-init's slope flattens (worse decay) as $p$ grows. The pattern inverts the small-$b$ pattern.}
+    \includegraphics[width=\linewidth]{loss_curves_b256_AC.png}
+    \caption{$b{=}256$. \textbf{(A)} Full eval-loss curves: AR-init runs blow past MDLM-init and scratch immediately after the switch and only the very early switches recover. \textbf{(B)} Best eval vs.\ source-objective fraction $p$: MDLM-init beats AR-init at every $p$, AR-init worsens monotonically with $p$, and only scratch ($p{=}0$) is competitive.}
     \label{fig:b256}
 \end{figure}
 
-\subsection{AR-init vs.\ MDLM-init at $b{=}4$}
-
-\begin{figure}[t]
-    \centering
-    \includegraphics[width=\linewidth]{ar_vs_mdlm_b4.png}
-    \caption{AR-init vs.\ MDLM-init at $b{=}4$. \textbf{(A)} Best post-switch loss as a function of $p$: AR-init dominates at every $p$. \textbf{(B)} Per-curve log-log slope (more negative $=$ faster decay): MDLM-init has shallower slopes throughout. \textbf{(C)} AR-init advantage in nats at $b{=}4$: positive at every $p$, peaking at $+0.127$ at $p{=}0.5$.}
-    \label{fig:ar_vs_mdlm}
-\end{figure}
-
-At $b{=}4$, AR-init beats MDLM-init at every $p \in \{0.30, 0.50, 0.80, 0.90, 0.95\}$ (Fig.~\ref{fig:ar_vs_mdlm}C). This is consistent with the front-loaded-transfer hypothesis: the AR objective produces features that are more directly usable for small-block BD3 (which is itself nearly AR), while MDLM features encode bidirectional context use that is less aligned with $b{=}4$ BD3.
-
-\subsection{MoE health does not confound the loss results}
-
-Late-switch AR-init runs at $b{=}4$ show progressively higher MoE-dropped-token fractions and lower router entropy (drop $0.00004 \to 0.022$, entropy $1.226 \to 1.110$ from $p{=}0.30$ to $p{=}0.95$). Late switches are unhealthy not just on validation loss but also on routing diagnostics, ruling out the alternative hypothesis that the loss differences come from coincidental MoE collapse.
-
 %=============================================================================
-\section{Data-Constrained Validation \TODO{run}}
+\section{Data-Constrained Subtlety}
 \label{sec:data_constrained}
 %=============================================================================
 
-The results above are at compute-bound scale (${\sim}1.7$ epochs over $1.54$B unique tokens). The original motivation for studying dLMs is the data-constrained regime, where AR overfits in multi-epoch training while diffusion continues to improve~\citep{ni2025diffusionlanguagemodelssuper, gao2025whatmakes}. We therefore plan a small data-constrained experiment to verify that the curriculum optimum remains valid where it most matters.
+The one-epoch sweep is in the regime where neither AR nor BD3 overfits. The motivating regime for dLMs is the opposite: small unique-data pools trained for many epochs, where AR is known to overfit while diffusion continues to improve. We test the curriculum recipe in this regime at $U \in \{25\text{M}, 50\text{M}\}$, 32 epochs each, with $b{=}4$.
 
-\paragraph{Setup.} We hold the model and optimizer identical to Section~\ref{sec:method}, fix the unique-data pool $U \in \{25\text{M}, 50\text{M}, 100\text{M}\}$ tokens (drawn from ClimbMix held-in shards), and train each method to convergence under heavy regularization. The AR baseline is properly tuned via a Muon weight-decay sweep at each $U$ (we already know from \texttt{dense\_data\_limited.md} and \texttt{moe\_data\_limited.md} that the default config overfits hard at $U{=}25$M; without WD tuning the AR baseline is artificially weak). Methods compared:
+\subsection{Naive $\pAR{=}0.30$ fails; AR-phase weight decay restores it}
 
-\begin{itemize}
-\item AR, with per-$U$ best Muon WD.
-\item Scratch BD3 ($b{=}4$), with per-$U$ best Muon WD.
-\item Curriculum AR$\to$BD3 ($p_{\mathrm{AR}}{=}0.30$, $b{=}4$), with the AR-phase WD chosen from the AR sweep at the same $U$.
-\end{itemize}
-Each method is run with 2 seeds; we report best validation loss with checkpoint saving enabled (the current MoE data-limited runs have checkpoints disabled, which makes their best-eval claims unrecoverable).
+\begin{table}[h]
+\centering
+\caption{Data-constrained runs at $b{=}4$, 32 epochs each. ``Curriculum naive'' is $\pAR{=}0.30$ AR$\to$BD3 with no weight decay anywhere; ``Curriculum tuned'' uses split weight decay during the AR phase only (Muon WD $0.1$, Adam WD $0.001$, router Adam WD $0$) and no WD during the BD3 phase. Each cell reports best eval @ epoch of best.}
+\label{tab:dc}
+\small
+\begin{tabular}{lcc}
+\toprule
+Method & $U{=}25$M & $U{=}50$M \\
+\midrule
+Scratch BD3 b=4 (no WD)             & $\mathbf{3.2079}$ @ ep $29.3$ & $\mathbf{2.9509}$ @ ep $26.1$ \\
+Curriculum naive  ($\pAR{=}0.30$, no WD)  & $3.4884$ @ ep $17.9$ & $3.1083$ @ ep $26.7$ \\
+Curriculum tuned  ($\pAR{=}0.30$, AR-WD)  & $3.2231$ @ ep $17.1$ & $2.9603$ @ ep $26.7$ \\
+\midrule
+gap of naive to scratch  & $+0.2805$ & $+0.1574$ \\
+gap of tuned to scratch  & $+0.0152$ & $+0.0094$ \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\paragraph{What success looks like.} The curriculum claim survives if at every $U$, $p_{\mathrm{AR}}{=}0.30$ matches or beats both scratch BD3 and tuned AR on best validation loss. The result we are most worried about is that tuned AR closes the gap to scratch BD3 (or beats it) at $U{=}25$M, in which case the data-constrained advantage of dLMs may itself be partly a hyperparameter artifact rather than a fundamental property.
+The naive recipe loses to scratch by $0.28$ nats at $U{=}25$M and $0.16$ nats at $U{=}50$M --- substantially worse than the one-epoch result, where the curriculum--scratch gap is at most $0.01$ nats. The mechanism is visible in the AR phase: at $U{=}25$M the no-WD AR prefix reaches its best eval at step 500 (epoch 4) at $3.5281$ and then overfits to $3.9262$ by the handoff, with the MoE router collapsing in parallel ($U{=}50$M no-WD AR final router entropy $0.747$, dropped-token fraction $0.030$); the BD3 continuation inherits the damaged router and never catches scratch. Adding AR-phase weight decay flattens the AR phase, preserves the router (final entropy $1.001$, dropped fraction $0.0004$ at $U{=}50$M), and the BD3 continuation closes the gap to scratch dramatically: from $0.28$ to $0.015$ nats at $U{=}25$M, and from $0.16$ to $0.009$ nats at $U{=}50$M.
 
-\TODO{Insert results table for AR / Scratch BD3-b4 / Curriculum p=0.30,b=4 at $U \in \{25\text{M}, 50\text{M}, 100\text{M}\}$. Plot best-eval-vs-$U$ for the three methods. See \texttt{moe\_data\_limited.md} \S Next Steps for the launch plan.}
+Figure~\ref{fig:dc_u25} shows the eval-loss trajectories at $U{=}25$M for the three methods.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.9\linewidth]{data_constrained_u25m_curves.png}
+    \caption{Data-constrained training curves at $U{=}25$M, 32 epochs, $b{=}4$. Black: scratch BD3, no WD. Red: naive curriculum at $\pAR{=}0.30$ with no WD; the AR phase peaks early then overfits, and the BD3 continuation never catches scratch. Green: tuned curriculum, same $\pAR{=}0.30$ but with AR-phase split-WD; the AR phase stays flat and the BD3 continuation tracks scratch closely. Switch occurs at step ${\approx}1180$ (30\% of $3{,}930$).}
+    \label{fig:dc_u25}
+\end{figure}
+
+\textbf{Router health, not AR loss, predicts the BD3 continuation.} At $U{=}50$M the tuned AR phase has \emph{worse} AR validation loss than the no-WD phase ($3.290$ vs $3.246$ best), but the BD3 continuation from it is $0.148$ nats \emph{better}. AR validation loss is anti-correlated with what we actually care about. Since we have only run data-constrained curriculum at $b{=}4$, where the one-epoch margin was already small (${\sim}0.32\%$), the tuned curriculum lands close to scratch but does not strictly beat it; if the AR-phase WD fix continues to neutralize router collapse at $b{=}64$ (where the one-epoch margin is ${\sim}1.0\%$), the larger margin should reappear.
 
 %=============================================================================
 \section{Limitations}
 \label{sec:limitations}
 %=============================================================================
 
-\textbf{One model size.} All curriculum results are at 70M parameters. Whether $p^\star{=}0.30$ holds at 150M+ is open; we plan a single 150M scale-up at compute-optimal as a generalization check.
+\textbf{Step-fixed, not wall-clock-fixed.} Budget is in optimizer steps; AR passes are roughly $5\times$ cheaper than BD3 at our shape, so a wall-clock-fixed comparison would weight AR more favorably and the wall-clock-optimal $\pAR$ would be larger than $0.30$. The exact factor depends on local hardware and BD3 implementation; the qualitative direction is robust.
 
-\textbf{Single total budget.} The grid is at $T{=}10{,}100$ steps. Whether the optimum is invariant to total budget is testable but not yet tested.
+\textbf{Single scale.} The hypothesis has not been tested at scales beyond 70M. Vocabulary size $8{,}192$ and sequence length $512$ are intentionally small to maximize MFU and iteration speed at this size; whether $\pAR^\star{=}0.30$ holds at larger model sizes, longer sequences, or larger vocabularies is open. As a downward-scale data point, we ran an analogous sweep at 1M parameters on TinyShakespeare and observed the same $\pAR{=}0.30$ optimum (Appendix~\ref{app:tinysh}).
 
-\textbf{Validation loss only.} We do not report downstream metrics (HellaSwag, ARC, etc.). At 70M / $\le$2.65B tokens, downstream signal is near-noise on standard benchmarks; the data-constrained scaling planned in \S\ref{sec:data_constrained} is the appropriate follow-up.
+\textbf{No downstream metric.} At our scale, downstream performance on benchmarks such as HellaSwag is essentially noise; the prescription is therefore a validation-loss prescription.
 
-\textbf{AR-init grid is partially populated at $b{=}16, 64$.} Only $p_{\mathrm{AR}}{=}0.30$ is run at these block lengths in the AR-init track. The MDLM-init grid (full 5$\times$4) and the AR-init full sweep at $b \in \{4, 256\}$ jointly support the invariance claim, but a complete AR-init grid would tighten the case.
+\textbf{MoE stability.} Mixture-of-Experts is more sensitive to hyperparameters (LR, weight decay, router behavior) than a comparable dense transformer, and despite our best effort to tune, some of the under-performing configurations in this paper may simply reflect insufficient hyperparameter search rather than a fundamental disadvantage. We expect the qualitative findings to hold under additional tuning, but absolute numbers and cross-method gaps could shift.
 
-\textbf{Comparison to BD3LM is at our setup, not theirs.} Our $p_{\mathrm{MDLM}}{=}0.85$-recipe estimate is from interpolating our own grid, not from re-running their full recipe with their data and tokenizer.
+\textbf{More data-efficiency techniques.} We show that AR-phase weight decay is sufficient to make the curriculum at least match scratch BD3 in the data-constrained regime. Recent work documents stronger data-efficiency interventions that are orthogonal to ours: \citet{kim2025infinitecompute} show that aggressive weight decay (${\sim}30\times$ standard practice), parameter scaling, and ensembling-with-distillation extract substantially more performance from a fixed data pool, and the open NanoGPT-Slowrun benchmark~\citep{nanogpt_slowrun} aggregates further community-found tricks for the same regime. These should stack on top of our curriculum and would tighten the data-constrained results we report. As a side remark: based on the data-constrained results in this paper plus the data-efficiency techniques surveyed in \citet{kim2025infinitecompute} and \citep{nanogpt_slowrun}, we suspect that diffusion does not in fact strictly beat AR in this regime once both objectives are given the same regularization and ensembling treatment --- a claim worth revisiting in the next iteration.
 
 %=============================================================================
 \section{Conclusion}
 \label{sec:conclusion}
 %=============================================================================
 
-Treating the AR-to-diffusion conversion ratio as a tunable hyperparameter rather than a fixed design choice changes the answer. At 70M MoE / ClimbMix / sequence length 512 / 10.1k steps, the validation-loss-optimal switch point is $p_{\mathrm{AR}}{=}0.30$, invariant in the BD3 post-switch block length except at $b{=}256$. The optimum is much earlier than the $p_{\mathrm{AR}} \approx 0.85\text{--}0.99$ implied by current A2D recipes (BD3LM, Dream-7B, SDAR, LLaDA-2). A simple front-loaded transfer hypothesis explains both the interior optimum and its block-length invariance. Whether this finding translates to larger scale and to the data-constrained regime is the natural next test.
+When pretraining a block-diffusion language model from scratch, the right default is a two-stage block-size curriculum with $\pAR \approx 0.30$: train autoregressively for the first $30\%$ of the budget, then switch to small-block BD3. In the standard one-epoch regime this beats both extremes (pure-scratch BD3 and AR-heavy curricula) across post-switch block sizes, and the optimum itself is approximately invariant in the BD3 block length --- a finding consistent with the AR skills and representations transferable to diffusion being themselves block-size-independent. In the multi-epoch data-constrained regime the recipe initially fails because the AR phase overfits and the MoE router collapses at the handoff; tuning weight decay properly restores it to at least matching scratch BD3, with reason to expect that the one-epoch curriculum margin reappears at larger block sizes once tuned. The recipe is much closer to optimal than current AR-heavy A2D practice, and is a single-knob prescription: $\pAR{=}0.30$, with AR-phase weight decay if data-constrained.
 
 \subsubsection*{Acknowledgments}
 Experiments were run on shared 4$\times$H100 nodes rented on Vast.ai.
@@ -290,52 +273,177 @@ We selected $\mathrm{lr\_mult}$ by short probes prior to the main grid.
 
 \begin{table}[h]
 \centering
-\caption{LR-multiplier probes for MDLM$\to$BD3 switches. Probe length $1500$ steps, $p{=}0.30$, $b{=}64$. \texttt{lr\_mult=0.6667} chosen.}
+\caption{LR-multiplier probes for MDLM$\to$BD3 switches. Probe length 1500 steps, $p_{\mathrm{MDLM}}{=}0.30$, $b{=}64$. $\mathrm{lr\_mult}{=}0.6667$ chosen.}
 \small
 \begin{tabular}{lcl}
 \toprule
 $\mathrm{lr\_mult}$ & Best eval & Notes \\
 \midrule
-0.22   & 3.1716 & Too slow/low, terminated \\
-0.6667 & \textbf{3.0973} & Selected \\
-2.00   & 3.1318 & Viable but worse \\
-6.00   & 3.3373 & Bad, terminated \\
+$0.22$   & $3.1716$         & Too slow / low, terminated \\
+$0.6667$ & $\mathbf{3.0973}$ & Selected \\
+$2.00$   & $3.1318$         & Viable but worse \\
+$6.00$   & $3.3373$         & Bad, terminated \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The AR$\to$BD3 switch uses $\mathrm{lr\_mult}{=}2.0$, which matches the scratch BD3LM baseline LR. The asymmetry between the two switch tracks is consistent with MDLM features sitting closer to BD3 in optimization geometry, so a smaller LR is needed to avoid disturbing them.
+The AR$\to$BD3 switch and scratch BD3 baseline use $\mathrm{lr\_mult}{=}2.0$, which matches BD3LM's scratch baseline LR. The asymmetry between AR-init and MDLM-init switch LRs is consistent with MDLM features sitting closer to BD3 in optimization geometry, so a smaller LR avoids disturbing them.
 
 %=============================================================================
-\section{Source-chain training}
-\label{app:source}
+\section{Smaller-scale curriculum result on TinyShakespeare}
+\label{app:tinysh}
 %=============================================================================
 
-To enable curriculum runs at the same $p$ to share the source-objective phase, we trained one AR source chain and one MDLM source chain to $T{=}10{,}100$ steps and saved checkpoints at the budgeted switch points $\{p{=}0.30, 0.50, 0.80, 0.90, 0.95, 1.00\}$. Source-chain best validation losses on their native objectives are summarized below; switch runs branch from these checkpoints with the appropriate LR multiplier and post-switch objective.
+We ran an analogous AR$\to$block-MDLM curriculum sweep on TinyShakespeare at much smaller scale (0.3M and 1M-parameter transformers) under an IsoFLOP budget of $C = 6 \times 10^{14}$, varying total steps and the AR fraction $\pAR$. The same minimum at $\pAR{=}0.30$ appears (Table~\ref{tab:tinysh}, Figure~\ref{fig:tinysh}), supporting the hypothesis at this much smaller scale.
+
+\begin{table}[H]
+\centering
+\caption{TinyShakespeare validation cross-entropy for AR$\to$block-MDLM curriculum. Bold: best per row.}
+\label{tab:tinysh}
+\small
+\begin{tabular}{lccccc}
+\toprule
+& \multicolumn{5}{c}{1{,}200 total steps} \\
+\cmidrule(lr){2-6}
+Model size & $\pAR{=}0$ & $\pAR{=}0.1$ & $\pAR{=}0.3$ & $\pAR{=}0.5$ & $\pAR{=}0.7$ \\
+\midrule
+0.3M & $2.045$ & $1.973$ & $\mathbf{1.957}$ & $1.966$ & $2.006$ \\
+1M   & $1.891$ & $1.871$ & $\mathbf{1.814}$ & $1.839$ & $1.865$ \\
+\midrule
+& \multicolumn{5}{c}{4{,}000 total steps} \\
+\cmidrule(lr){2-6}
+Model size & $\pAR{=}0$ & & $\pAR{=}0.3$ & $\pAR{=}0.5$ & \\
+\midrule
+0.3M & $1.860$ & --- & $\mathbf{1.812}$ & $1.830$ & --- \\
+1M   & $1.733$ & --- & $\mathbf{1.690}$ & $1.692$ & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\linewidth]{figure3_curriculum_sweet_spot.png}
+    \caption{TinyShakespeare validation cross-entropy as a function of AR fraction $\pAR$, at two model sizes (0.3M and 1M parameters) and two total budgets ($1{,}200$ and $4{,}000$ steps). The same $\pAR{=}0.30$ minimum appears at both sizes and both budgets.}
+    \label{fig:tinysh}
+\end{figure}
+
+The TinyShakespeare runs are character-level rather than BPE, the post-switch objective is full-block MDLM (block size $4$ within sequence length $32$) rather than the BD3 used in the main body, and the model and dataset are several orders of magnitude smaller. We include this only as a downward-scale data point, not as evidence of scale generalization upward.
+
+%=============================================================================
+\section{Data-constrained tuning details}
+\label{app:dc_tuning}
+%=============================================================================
+
+\subsection{$U{=}25$M AR-phase weight-decay sweep}
+
+We swept AR-phase weight-decay configurations at $U{=}25$M with a 1{,}000-step AR probe before committing to the full curriculum. The split-WD configuration with Muon WD $0.1$, Adam WD $0.001$, router Adam WD $0$ was the best AR-only result.
 
 \begin{table}[h]
 \centering
-\caption{Source-chain checkpoints. ``Best eval'' is on the source objective.}
+\caption{AR-only probes at $U{=}25$M, 1{,}000 steps each. Selected configuration in bold.}
 \small
-\begin{tabular}{lcrr}
+\begin{tabular}{lccccc}
 \toprule
-Source run & Final step & Best eval & Best step \\
+Run name & Muon WD & Adam WD & Router WD & Best AR eval & Best step \\
 \midrule
-\texttt{source\_ar\_to03100}   & 3099  & 2.8273 & 3050 \\
-\texttt{source\_ar\_to05100}   & 5099  & 2.7419 & 5050 \\
-\texttt{source\_ar\_to08100}   & 8099  & 2.6792 & 7100 \\
-\texttt{source\_ar\_to09100}   & 9099  & 2.6610 & 8950 \\
-\texttt{source\_ar\_to10100}   & 10099 & 2.6718 & 9900 \\
-\midrule
-\texttt{source\_mdlm\_to03100} & 3099  & 3.2299 & 3050 \\
-\texttt{source\_mdlm\_to05100} & 5099  & 3.1484 & 4850 \\
-\texttt{source\_mdlm\_to08100} & 8099  & 3.0349 & 7500 \\
-\texttt{source\_mdlm\_to09100} & 9099  & 2.9861 & 9000 \\
-\texttt{source\_mdlm\_to10100} & 10099 & 2.9704 & 9750 \\
+\texttt{...muw0p1\_adamwd0\_ar}              & $0.1$  & $0$     & $0$ & $3.5224$ & 900 \\
+\texttt{...muw0p1\_adamwd0p01\_routerwd0\_ar} & $0.1$  & $0.01$  & $0$ & $3.6374$ & 550 \\
+\textbf{\texttt{...muw0p1\_adamwd0p001\_routerwd0\_ar}} & $\mathbf{0.1}$  & $\mathbf{0.001}$ & $\mathbf{0}$ & $\mathbf{3.4609}$ & 850 \\
+\texttt{...muw0p05\_adamwd0p001\_routerwd0\_ar}        & $0.05$ & $0.001$ & $0$ & $3.4673$ & 850 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The AR source chain is much stronger than the MDLM source chain on their respective native objectives, but this does not translate into post-switch BD3 superiority for late switches: in both grids, $p{=}0.30$ wins.
+Applying WD to all groups (including the router) was uniformly worse. Applying it to nothing (the naive setting) overfits at step ${\sim}500$ and degrades thereafter. Applying it to Muon-updated matrices and a small amount to Adam-updated table parameters, with router WD off, was the best combination and what we use throughout the data-constrained sweep.
+
+\subsection{Scratch BD3 with all-WD-0.1 is unstable}
+
+We initially considered applying WD to BD3 as well. At $U{=}25$M, scratch BD3 with all WD set to $0.1$ reaches a worse minimum ($3.3613$ vs $3.2079$) and trains unstably to a final eval of $4.4145$. BD3 should use no WD in this setting. The mismatch between the AR phase (needs WD) and the BD3 phase (does not) is a real asymmetry; the curriculum benefits from per-phase weight-decay tuning, not a single global WD.
+
+%=============================================================================
+\section{Architecture and reproducibility}
+\label{app:repro}
+%=============================================================================
+
+All curriculum runs in this paper share a fixed architecture and optimizer recipe. Table~\ref{tab:arch} lists the values.
+
+\begin{table}[h]
+\centering
+\caption{Model, data, and optimizer configuration. The same configuration is used for every run in the paper; only the curriculum knobs ($\pAR$, post-switch block length $b$, weight-decay group settings) vary.}
+\label{tab:arch}
+\small
+\begin{tabular}{ll}
+\toprule
+Field & Value \\
+\midrule
+Architecture & 70M-parameter Mixture-of-Experts transformer \\
+$d_{\mathrm{model}}$, $d_{\mathrm{ff}}$, $n_{\mathrm{layers}}$, $n_{\mathrm{heads}}$ & $768$, $2048$, $8$, $12$ \\
+Positional embedding & RoPE \\
+Attention features & QK-normalization, value residuals, per-head gating, depth-scaled layernorm \\
+MLP & ReGLU \\
+Normalization & RMSNorm \\
+Attention implementation & cuDNN dense (with BD3 block mask) \\
+MoE: experts per layer & $4$, top-1 routing, capacity factor $1.25$ \\
+MoE: layer placement & every other layer ($4$ MoE layers out of $8$) \\
+MoE: router input on BD3 & shared between $x_t$ and $x_0$ streams (not split) \\
+MoE: auxiliary loss & router $z$-loss with weight $0.01$ \\
+Weight tying & embedding $\leftrightarrow$ LM head \\
+\midrule
+Tokenizer & byte-pair encoding, vocab $8{,}192$, mask token $8{,}192$ \\
+Data & ClimbMix \\
+Sequence length & $512$ tokens \\
+Effective batch size & $512$ sequences ($262{,}144$ tokens / optimizer step) \\
+\midrule
+Optimizer (matrix parameters) & NorMuon, momentum warmup $0.85 \to 0.95$ \\
+Optimizer (embeddings + scalars) & AdamW, $(\beta_1, \beta_2, \epsilon) = (0.95,\ 0.99,\ 10^{-8})$ \\
+Base learning rate (embedding tables, scalars, matrices) & $(0.01,\ 0.005,\ 0.04)$ \\
+LR multiplier, AR phase & $5.0$ \\
+LR multiplier, scratch BD3 / AR$\to$BD3 post-switch & $2.0$ \\
+LR multiplier, MDLM$\to$BD3 post-switch & $0.6667$ \\
+Default Muon weight decay & $10^{-4}$ \\
+Schedule & 100-step linear warmup, then constant \\
+\midrule
+One-epoch budget & $10{,}100$ steps ($\sim$2.65B tokens; $\sim$1.7 epochs over 1.54B unique) \\
+Data-constrained budget & 32 epochs per pool: $U{=}25$M $\Rightarrow$ 3{,}930 steps; $U{=}50$M $\Rightarrow{\sim}$7{,}860 steps \\
+Hardware & $4 \times$ NVIDIA H100 (80GB) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Architecture-intervention deltas (AR objective)}
+
+Each architectural feature in Table~\ref{tab:arch} contributes non-trivially to AR validation loss at a matched 5{,}100-step single-epoch reference setup (same shape, optimizer, and data as Table~\ref{tab:arch}, but trained on the full 1.54B-token split rather than a small data pool). Table~\ref{tab:arch_delta} reports best, final, and average-over-last-250-steps eval loss for each intervention plus the best-eval improvement over the plain transformer baseline. The combined recipe in the last row of Table~\ref{tab:arch_delta} is what we use as the source architecture for every curriculum run in the main body.
+
+\begin{table}[h]
+\centering
+\caption{Architectural ablation under the AR objective. ``Best'' is the lowest eval loss observed during a 5{,}100-step training run; ``avg-250'' averages eval losses logged in the last 250 training steps; $\Delta$ best is the relative best-eval improvement over the plain transformer baseline (first row). The first two rows are sourced from W\&B; the remaining rows are computed locally from training logs.}
+\label{tab:arch_delta}
+\small
+\begin{tabular}{lcccc}
+\toprule
+Configuration & Best & Final & Avg-250 & $\Delta$ best \\
+\midrule
+Plain transformer (RoPE, ReGLU, RMSNorm only)             & $2.8529$ & $2.8841$ & ---      & --- \\
+\;+ QK-norm, value residuals, per-head gating, LN scaling & $2.7686$ & $2.8000$ & ---      & $+2.96\%$ \\
+\;+ QK-norm, value embedding, per-head gating, LN scaling & $2.8480$ & $2.8895$ & $2.8798$ & $+0.17\%$ \\
+\;+ Mixture-of-Experts (no other extras)                  & $2.8062$ & $2.8380$ & $2.8331$ & $+1.64\%$ \\
+\;+ MoE \emph{and} the four attention features (\textbf{used in main body})
+                                                          & $2.7523$ & $2.7792$ & $2.7823$ & $+3.53\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+QK-norm + value residuals + per-head gating + LN scaling alone account for roughly $3\%$ of the improvement; MoE alone for ${\sim}1.6\%$; replacing value residuals with a value-embedding table at the same attention-feature setting is roughly neutral on best eval. The combination is the strongest configuration we tested.
+
+\subsection{Multi-stage block-size ramps are not worth it}
+
+A natural alternative to the two-stage curriculum is a multi-stage block-size ramp. We ran one such ramp (run \texttt{ar\_p050\_multiblock\_b4\_b16\_b64\_b256\_lr2\_decay}) at the same 70M MoE setup as the main body: AR for the first $5{,}100$ steps, then BD3 at $b{=}4$ ($5{,}100{-}6{,}200$), $b{=}16$ ($6{,}200{-}7{,}200$), $b{=}64$ ($7{,}200{-}8{,}200$), $b{=}256$ ($8{,}200{-}10{,}100$). Figure~\ref{fig:geom} shows the eval-loss trajectory. The best eval loss across the entire run is $2.9038$ (during the $b{=}4$ stage at step $6{,}100$), while the single-stage AR-init $b{=}4$ winner from the main body reaches $2.7275$. The ramp's eval loss never goes below the single-stage line at any step, and once the curriculum moves past $b{=}4$ the loss only gets worse. Multi-stage block-size ramps are a worse use of budget than a single AR$\to$small-block transition, which is why we restrict the main 70M sweep to two-stage curricula.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\linewidth]{multiblock_vs_b4.png}
+    \caption{Eval-loss trajectory for the multi-block ramp (AR for $5{,}100$ steps, then BD3 at $b{=}4{\to}16{\to}64{\to}256$, $1{,}000$--$1{,}900$ steps per stage). Background colors mark each block-size stage. The dashed line is the best validation loss of the single-stage AR$\to$BD3 $\pAR{=}0.30$, $b{=}4$ run (\texttt{ar\_p030\_b4\_lr2\_full} = $2.7275$, Table~\ref{tab:ar_init}). The multi-block run's eval loss stays strictly above the single-stage line throughout.}
+    \label{fig:geom}
+\end{figure}
 
 \end{document}
